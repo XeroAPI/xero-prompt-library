@@ -1,0 +1,18 @@
+Create a Next.js application for property management companies that 
+syncs with Xero for automated rent collection and owner statements. 
+Use TypeScript throughout with tRPC for type-safe API routes. 
+Implement OAuth 2.0 authentication using NextAuth.js with Xero 
+provider. Build features for tenant onboarding with automated 
+invoice generation for rent and deposits, maintenance request 
+tracking with expense allocation, and trust accounting compliance. 
+Add automated late fee calculations, owner distribution processing, 
+and comprehensive reporting for property performance. Include 
+Stripe Connect for rent payments that automatically reconcile in 
+Xero. Implement real-time notifications using Pusher and use Prisma 
+ORM with PostgreSQL.
+
+Tech Stack: Next.js 13, TypeScript, Prisma, PostgreSQL, Stripe, tRPC
+Key Endpoints: /Invoices, /Payments, /Contacts, /BankTransfers
+Authentication: OAuth 2.0 with NextAuth.js
+Implementation Notes: Use Next.js API routes for webhook handling, 
+implement optimistic UI updates

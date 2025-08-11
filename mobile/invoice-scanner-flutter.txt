@@ -1,0 +1,17 @@
+Develop a Flutter mobile application for iOS and Android that captures 
+and processes invoices for Xero integration. Build a Node.js backend 
+with Express that handles OAuth 2.0 authentication with PKCE flow. 
+Implement document scanning using Flutter's camera plugin with edge 
+detection and perspective correction. Use Google's ML Kit for 
+on-device text recognition to extract invoice details. The backend 
+should validate extracted data, match against existing contacts in 
+Xero, and create draft bills for review. Include features for batch 
+scanning, automatic categorization using machine learning, and 
+offline capability with sync queue. Add biometric authentication 
+and encrypted local storage for sensitive data.
+
+Tech Stack: Flutter 3.0+, Dart, Node.js, MongoDB, Google ML Kit
+Key Endpoints: /Invoices, /Contacts, /Attachments, /Accounts
+Authentication: OAuth 2.0 with PKCE
+Implementation Notes: Implement image compression before upload, 
+use Provider for state management

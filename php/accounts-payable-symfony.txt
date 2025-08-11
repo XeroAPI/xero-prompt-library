@@ -1,0 +1,16 @@
+Build a Symfony application that automates accounts payable workflows 
+integrated with Xero. Use xero-php-oauth2 with Symfony's HTTP client 
+for API communication. Create vendor portals for invoice submission 
+with automatic three-way matching against purchase orders and receipts. 
+Implement OCR processing for scanned invoices using Tesseract, 
+extracting line items and automatically creating bills in Xero. 
+Add approval workflows with email notifications, automatic payment 
+scheduling based on terms, and early payment discount optimization. 
+Include duplicate invoice detection using fuzzy matching, spend 
+analytics dashboards, and integration with banking APIs for payment 
+execution. Implement comprehensive audit trails and SOX compliance reporting.
+
+Tech Stack: Symfony 6, PHP 8.1+, PostgreSQL, RabbitMQ, Tesseract OCR
+Key Endpoints: /Invoices (bills), /PurchaseOrders, /Payments, /Contacts
+Authentication: OAuth 2.0 with league/oauth2-client
+Implementation Notes: Use Symfony Messenger for async processing, implement Doctrine event listeners for audit logs

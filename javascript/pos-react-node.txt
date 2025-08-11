@@ -1,0 +1,14 @@
+Develop a React-based POS system with Node.js backend that syncs daily sales 
+from multiple retail locations to Xero. Create a React admin dashboard showing 
+real-time sales data across stores with Material-UI components. The backend 
+should batch process end-of-day sales using the xero-node SDK, creating 
+summarized invoices per store with proper tracking categories. Implement 
+inventory synchronization that updates Xero stock levels after each sale and 
+triggers purchase orders when items hit reorder points. Add offline mode with 
+IndexedDB for network interruptions and queue-based syncing when connection 
+resumes. Include role-based access control and store-specific reporting.
+
+Tech Stack: React 18, Node.js, Express, PostgreSQL, Redis Queue, Material-UI
+Key Endpoints: /Invoices, /Items, /TrackingCategories, /PurchaseOrders
+Authentication: OAuth 2.0 with Custom Connections for server-to-server
+Implementation Notes: Use tracking categories for store locations, implement connection pooling for multi-tenant architecture

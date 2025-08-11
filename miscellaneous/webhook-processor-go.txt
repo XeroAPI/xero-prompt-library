@@ -1,0 +1,17 @@
+Develop a high-performance Go service that processes Xero webhooks 
+and maintains an event-sourced ledger of all accounting changes. 
+Implement webhook signature verification using HMAC SHA256 and 
+store events in EventStore. Build REST APIs using Gin framework 
+to query the event stream and reconstruct account states at any 
+point in time. Add Apache Kafka producers to stream events to 
+downstream systems for real-time analytics. Implement CQRS 
+pattern with separate read models in PostgreSQL for complex 
+queries. Include circuit breakers for Xero API calls, comprehensive 
+monitoring with Prometheus metrics, and distributed tracing with 
+Jaeger. Deploy using Docker with Kubernetes orchestration.
+
+Tech Stack: Go 1.19+, Gin, EventStore, PostgreSQL, Kafka, Redis
+Key Endpoints: Webhook endpoints, /Connections for tenant management
+Authentication: Custom Connections for machine-to-machine
+Implementation Notes: Use goroutines for concurrent processing, 
+implement at-least-once delivery semantics

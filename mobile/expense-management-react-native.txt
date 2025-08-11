@@ -1,0 +1,16 @@
+Build a React Native expense tracking app that integrates with Xero for 
+automatic expense report creation. Implement OAuth 2.0 with PKCE flow 
+for secure mobile authentication using the xero-node backend API. Create 
+features for receipt capture using device camera with OCR processing 
+through Google Vision API to extract vendor, amount, and date. Allow 
+offline expense entry with SQLite storage and background sync when 
+connected. Implement mileage tracking using device GPS with automatic 
+distance calculation. The backend should create bills in Xero with 
+attached receipt images, handle multi-currency expenses with real-time 
+exchange rates, and support approval workflows. Include push notifications 
+for expense approval status changes.
+
+Tech Stack: React Native, Node.js backend, SQLite, Google Vision API, Firebase
+Key Endpoints: /Invoices (bills), /Attachments, /Currencies, /Contacts
+Authentication: OAuth 2.0 with PKCE for mobile
+Implementation Notes: Compress images before upload, implement exponential backoff for sync retries

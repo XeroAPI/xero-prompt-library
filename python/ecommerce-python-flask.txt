@@ -1,0 +1,10 @@
+Create a simple, elegant, modern, and responsive web-based ecommerce application 
+that sells a single product: "The Executive" - a premium beltless trenchcoat. 
+The app must integrate with Xero to automatically create and email invoices when 
+purchases are completed.
+
+Tech Stack Recommendation
+Backend: Python with Flask/FastAPI
+Frontend: Modern HTML5, CSS3, JavaScript (or React if preferred)
+Xero Integration: Official xero-python SDK
+Payment: Via Xero online invoice (no separate payment processor needed)

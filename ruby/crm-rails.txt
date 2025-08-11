@@ -1,0 +1,17 @@
+Build a Ruby on Rails CRM that seamlessly integrates customer data and 
+sales pipeline with Xero accounting. Use the xero-ruby gem with Rails 
+encrypted credentials for secure key storage. Create models for leads, 
+opportunities, and quotes that automatically convert to Xero invoices 
+upon deal closure. Implement background jobs with Sidekiq for syncing 
+contact updates bi-directionally, ensuring data consistency. Add 
+features for credit limit management based on payment history from Xero, 
+automated statement generation, and customer portal with self-service 
+invoice access. Include ActionCable for real-time updates when invoices 
+are paid, and implement comprehensive caching with Redis to minimize 
+API calls.
+
+Tech Stack: Ruby on Rails 7, PostgreSQL, Sidekiq, Redis, ActionCable
+Key Endpoints: /Contacts, /Invoices, /CreditNotes, /Payments
+Authentication: OAuth 2.0 with OmniAuth strategy
+Implementation Notes: Use Rails concerns for Xero synchronization logic, 
+implement optimistic locking for concurrent updates

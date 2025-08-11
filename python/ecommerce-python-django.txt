@@ -1,0 +1,14 @@
+Build a Django application that synchronizes Shopify orders with Xero invoices. 
+Use the xero-python SDK to implement OAuth 2.0 authentication with session storage. 
+Create a background Celery task that polls Shopify's REST API every 15 minutes for 
+new orders and automatically creates corresponding invoices in Xero with proper 
+tax handling, inventory tracking, and payment status. Include webhook endpoints 
+to receive real-time updates from both Shopify and Xero for order status changes. 
+Map Shopify SKUs to Xero item codes, handle multi-currency transactions, and 
+implement proper error handling with retry logic for failed API calls. Add a Django 
+admin interface showing synchronization status and error logs.
+
+Tech Stack: Python 3.8+, Django 4.0+, Celery, Redis, PostgreSQL, xero-python SDK
+Key Endpoints: /Invoices, /Items, /Contacts, /Payments
+Authentication: OAuth 2.0 with django-allauth integration
+Implementation Notes: Use Django's ORM for mapping tables, implement idempotency keys to prevent duplicate invoices

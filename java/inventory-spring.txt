@@ -1,0 +1,16 @@
+Develop a Spring Boot microservice for inventory management that maintains 
+real-time synchronization with Xero. Use the Xero-Java SDK with Spring's 
+OAuth2 client for authentication. Implement REST APIs for stock movements, 
+transfers between locations, and cycle counting that automatically update 
+Xero inventory levels. Add Apache Kafka integration for event-driven updates 
+from warehouse management systems. Include features for automatic purchase 
+order generation based on reorder points, supplier performance tracking, 
+and ABC analysis for inventory optimization. Implement batch processing 
+for bulk inventory adjustments using Spring Batch, with comprehensive audit 
+logging and rollback capabilities. Add Swagger documentation and monitoring 
+with Micrometer metrics.
+
+Tech Stack: Java 11+, Spring Boot 2.7+, PostgreSQL, Apache Kafka, Redis
+Key Endpoints: /Items, /PurchaseOrders, /Invoices, /TrackingCategories
+Authentication: OAuth 2.0 with Spring Security OAuth2
+Implementation Notes: Use database sequences for idempotency, implement circuit breakers with Resilience4j

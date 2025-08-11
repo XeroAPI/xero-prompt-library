@@ -1,0 +1,18 @@
+Build a Django application that integrates with Xero Payroll API 
+for automated payroll processing. Use xero-python SDK with Celery 
+for background job processing and Redis for task queue management. 
+Create employee self-service portals for timesheet submission, 
+leave requests, and payslip access. Implement complex award 
+interpretation for Australian payroll including penalty rates, 
+allowances, and superannuation calculations. Uservoice Add features 
+for roster management with shift swapping, automatic pay run 
+generation based on timesheets, and STP (Single Touch Payroll) 
+compliance reporting. Include integration with biometric time 
+clocks via REST API and implement comprehensive audit logging 
+for all payroll changes.
+
+Tech Stack: Django 4.0+, Celery, Redis, PostgreSQL, Docker
+Key Endpoints: /Employees, /Payslip, /Timesheets, /LeaveApplications
+Authentication: OAuth 2.0 with Custom Connections
+Implementation Notes: Use Django signals for audit trails, 
+implement data encryption for sensitive payroll data

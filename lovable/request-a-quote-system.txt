@@ -1,0 +1,43 @@
+Create a "Request a Quote" website for a lawn mowing business with Xero integration
+Build a modern, responsive lawn mowing quote request system with the following features:
+Core Functionality:
+Single-page quote request form with lawn-specific fields:
+Customer details (name, email, phone, property address)
+Lawn area in square metres (number input)
+Edge trimming required (yes/no toggle)
+Grass clipping preference (mulched vs caught in catcher)
+Preferred service frequency (one-time, weekly, fortnightly, monthly)
+Additional notes/special requirements (textarea)
+Real-time price calculation based on:
+Base rate per square metre
+Additional charge for edge trimming
+Different pricing for mulching vs catching clippings
+Instant quote display with pricing breakdown
+Form validation and submission
+Thank you confirmation with quote summary
+Xero Integration with a custom connection type integration  
+(https://developer.xero.com/documentation/guides/oauth2/custom-connections):
+Automatically create customer contact in Xero when quote is submitted
+Generate professional quote document in Xero with line items:
+Lawn mowing (area × rate)
+Edge trimming (if selected)
+Clipping disposal/mulching service
+Send quote directly to customer via Xero
+Design Requirements:
+Green/nature theme appropriate for lawn care business
+Clean, trustworthy design with lawn/garden imagery
+Mobile-responsive layout
+Prominent quote calculator as the main focus
+Company branding section with fictional business details
+Before/after gallery section for social proof
+Pricing Structure (built into calculator):
+Base rate: $0.05 per square metre
+Edge trimming: +$15 flat fee
+Catching clippings: +$10 (mulching is free/default)
+Minimum charge: $35
+Pages Needed:
+Homepage with integrated quote form and calculator
+Services overview section
+Contact information
+Simple about section
+Keep it customer-facing only - no admin dashboard needed. Make the code well-commented

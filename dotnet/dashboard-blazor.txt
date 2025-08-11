@@ -1,0 +1,16 @@
+Create a Blazor WebAssembly application with .NET Core backend that provides 
+real-time financial dashboards using Xero data. Use Xero-NetStandard SDK 
+with ASP.NET Core Identity for authentication. Build interactive charts using 
+ChartJS showing cash flow, revenue trends, and expense breakdowns with 
+drill-down capabilities. Implement SignalR for live updates when new 
+transactions are recorded. Add features for budget vs actual comparisons, 
+financial forecasting using ML.NET, and automated report generation with PDF 
+export. Include multi-organization support with tenant isolation, role-based 
+access control, and audit logging. Implement data caching with Redis and 
+background synchronization using Hangfire.
+
+Tech Stack: .NET 6+, Blazor WebAssembly, SQL Server, Redis, SignalR, ML.NET
+Key Endpoints: /Reports/*, /Invoices, /BankTransactions, /Accounts
+Authentication: OAuth 2.0 with IdentityServer4
+Implementation Notes: Use IMemoryCache for frequently accessed data, 
+implement repository pattern with Entity Framework Core

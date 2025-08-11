@@ -1,0 +1,17 @@
+Create a modern time tracking application using Vue.js 3 frontend and 
+Python FastAPI backend that integrates with Xero for automated invoicing. 
+Implement JWT authentication with OAuth 2.0 flow to Xero using httpx 
+async client. Build a responsive Vue.js interface with Vuetify components 
+for time entry, project management, and team scheduling. The FastAPI 
+backend should aggregate timesheet data and generate draft invoices in 
+Xero based on hourly rates and project budgets. Include features for 
+expense attachment to timesheets, automatic overtime calculations, and 
+client approval workflows. Implement WebSocket connections for real-time 
+team availability updates and PostgreSQL with SQLAlchemy for data 
+persistence.
+
+Tech Stack: Vue.js 3, FastAPI, PostgreSQL, Redis, Celery, WebSockets
+Key Endpoints: /Invoices, /Projects, /Contacts, /TrackingCategories
+Authentication: OAuth 2.0 with Authlib
+Implementation Notes: Use Pydantic for data validation, 
+implement row-level security in PostgreSQL

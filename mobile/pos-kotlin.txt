@@ -1,0 +1,18 @@
+Develop a Kotlin-based Android POS application for small retailers 
+that syncs daily sales with Xero. Implement OAuth 2.0 authentication 
+using AppAuth library with Chrome Custom Tabs. Build features for 
+product catalog management synced with Xero items, barcode scanning 
+using ML Kit, and offline transaction processing with Room database. 
+Add support for multiple payment methods including cash, card (via 
+Square Reader SDK), and digital wallets. Implement end-of-day 
+reconciliation that creates summarized invoices in Xero with payment 
+allocations. Include inventory count features, customer loyalty 
+program with points tracking, and multi-language support. Use Jetpack 
+Compose for modern UI, Hilt for dependency injection, and WorkManager 
+for background synchronization.
+
+Tech Stack: Kotlin, Jetpack Compose, Room, Retrofit, Square SDK
+Key Endpoints: /Invoices, /Items, /Payments, /Contacts
+Authentication: OAuth 2.0 with PKCE
+Implementation Notes: Implement offline-first architecture, 
+use Flow for reactive programming

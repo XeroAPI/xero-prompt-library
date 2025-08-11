@@ -1,0 +1,18 @@
+Develop a high-performance Rust microservice that processes large 
+volumes of transactions for synchronization with Xero. Use Actix-web 
+framework with async/await for handling concurrent requests. 
+Implement a custom OAuth 2.0 client using reqwest with connection 
+pooling and automatic token refresh. Build a transaction queue using 
+Redis Streams that batches operations for optimal API usage within 
+rate limits. Add data transformation pipelines using Serde for JSON 
+processing and implement intelligent retry logic with exponential 
+backoff. Include comprehensive error handling with custom error types, 
+structured logging with tracing crate, and metrics collection using 
+Prometheus. Deploy using Docker with multi-stage builds for minimal 
+image size.
+
+Tech Stack: Rust, Actix-web, Tokio, Redis, PostgreSQL, Docker
+Key Endpoints: /BankTransactions, /Invoices, /Payments
+Authentication: OAuth 2.0 with custom implementation
+Implementation Notes: Use connection pooling with deadpool, 
+implement graceful shutdown handling

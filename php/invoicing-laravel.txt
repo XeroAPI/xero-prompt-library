@@ -1,0 +1,16 @@
+Create a Laravel application that generates and manages e-invoices 
+synchronized with Xero. Use the xero-php-oauth2 SDK with Laravel's 
+service container for dependency injection. Build a customer portal 
+where clients can view invoices, make payments via Stripe, and 
+download PDF invoices generated with DOMPDF. Implement automated 
+invoice generation from project milestones tracked in the system, 
+with line items pulled from timesheet entries. Add support for 
+recurring invoices using Laravel's task scheduler, multi-language 
+invoice templates, and automatic late payment reminders. Include 
+webhook endpoints for Xero invoice updates and implement two-way 
+sync to handle invoice edits from either system.
+
+Tech Stack: Laravel 9+, PHP 8.1+, MySQL, Redis, Stripe, DOMPDF
+Key Endpoints: /Invoices, /Contacts, /Payments, /OnlineInvoices
+Authentication: OAuth 2.0 with Laravel Socialite provider
+Implementation Notes: Use Laravel queues for PDF generation, implement database transactions for payment processing

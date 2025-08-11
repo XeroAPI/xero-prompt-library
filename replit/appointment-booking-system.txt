@@ -1,0 +1,16 @@
+Make a booking website where clients can see your availability and schedule appointments. 
+Send automatic confirmation emails and reminders. 
+Design it with a clean calendar interface and modern booking flow.
+
+Integrate this with my Xero account using the Xero API via a 'custom connection' 
+It should create a contact for the person that books the appointment and send them an invoice for the appointment cost. 
+A link to the invoice in Xero should be sent in the email and email reminders.
+
+Please set a client id and a client secret for a Xero API custom connection 
+rather than providing an access token. 
+You can find how custom connections work using the client credentials OAuth 2 grant type here: 
+https://developer.xero.com/documentation/guides/oauth2/custom-connections/
+
+Provide a link to an online invoice when the appointment has been booked.
+The instructions on how to get an online invoice url are here: 
+https://developer.xero.com/documentation/api/accounting/invoices#retrieving-the-online-invoice-url

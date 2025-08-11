@@ -1,0 +1,18 @@
+Build an Angular-based manufacturing ERP system with NestJS backend 
+that integrates production workflows with Xero accounting. Implement 
+OAuth 2.0 using Passport.js strategies and JWT tokens for session 
+management. Create Angular modules for production planning, work 
+order management, and bill of materials tracking that automatically 
+update Xero inventory levels and COGS. Add features for quality 
+control with cost of rework tracking, machine maintenance scheduling 
+with expense allocation, and real-time production dashboards. 
+Implement barcode scanning for inventory movements, automatic 
+purchase order generation for raw materials, and job costing with 
+variance analysis. Use RxJS for reactive data flows and implement 
+real-time updates with Socket.io.
+
+Tech Stack: Angular 14+, NestJS, TypeORM, PostgreSQL, Redis, Socket.io
+Key Endpoints: /Items, /PurchaseOrders, /Invoices, /ManualJournals
+Authentication: OAuth 2.0 with Passport.js
+Implementation Notes: Use interceptors for API error handling, 
+implement database migrations with TypeORM
