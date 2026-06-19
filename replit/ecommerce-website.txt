@@ -8,7 +8,7 @@ Database: PostgreSQL (via Drizzle ORM) to store orders and Xero tokens
 Environment secrets: XERO_CLIENT_ID, XERO_CLIENT_SECRET, SESSION_SECRET (set XERO_REDIRECT_URI automatically from the Replit dev domain)
 Xero OAuth Flow:
 
-/api/login — redirects user to Xeros authorization page
+/api/login — redirects user to Xero's authorization page
 /api/callback — exchanges the auth code for tokens and stores them in the database
 /api/auth/status — returns { connected, tenantName, tenantId, loginUrl }
 /api/logout — clears stored tokens
@@ -20,11 +20,10 @@ offline_access openid profile email accounting.contacts accounting.invoices acco
 
 Application: Premium Single-Product E-Commerce Site
 
-Build a luxury e-commerce website to sell a single product called "The Executive" — a beltless trenchcoat.
+Build a luxury e-commerce website to sell a single product called "The Executive" — a beltless trenchcoat priced at £2,495.
 
 Sizes: XS, S, M, L, XL, XXL
 Colors: Midnight Black, Stone Grey, Navy
-
 Pages:
 
 / — Full-screen cinematic hero landing page with product image, brand statement, and "Acquire Now" CTA. Dark, editorial, restrained-luxury aesthetic — think Loro Piana or Brunello Cucinelli. No clutter, generous whitespace.
@@ -45,7 +44,7 @@ GET /api/xero/summary — returns { totalRevenue, totalInvoices, paidInvoices, u
 Xero integration logic (per order):
 
 Create or upsert a Xero Contact (name, email, phone)
-Create an authorised ACCREC Invoice with a 14-day due date, line item: product description (including size + color), quantity, unit amount (the price of the trenchcoat), account code
+Create an authorised ACCREC Invoice with a 14-day due date, line item: product description (including size + color), quantity, unit amount £2,495, account code 200
 Fetch the online invoice URL via GET /Invoices/{id}/OnlineInvoice — return this as the payment URL
 If Xero fails, still save the order with status failed — do not lose the order
 Design direction:
