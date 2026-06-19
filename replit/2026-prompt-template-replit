@@ -1,0 +1,32 @@
+Create a full-stack Web Application that integrates with the Xero API. 
+
+This app must be built as a standard Xero "Web App" using the OAuth 2.0 Authorization Code Flow (do NOT use PKCE, Custom Connections or Client Credentials).
+
+Core Architecture Requirements for Replit:
+1. Tech Stack: Use Node.js/Express for the backend server and React/Vite for the frontend UI.
+2. Database: Use Replit's built-in PostgreSQL (via Prisma) or SQLite to securely store user sessions, encrypted Xero Access Tokens, and Refresh Tokens.
+3. Environment Variables: Use Replit Secrets to manage:
+   - XERO_CLIENT_ID
+   - XERO_CLIENT_SECRET
+   - XERO_REDIRECT_URI (Note: Emphasize that the redirect URI must match the Replit deployment URL + /callback)
+   - SESSION_SECRET
+
+Xero OAuth 2.0 Web App Flow Requirements:
+- Build a "Login with Xero" button on the frontend landing page.
+- Implement a backend `/login` route that redirects the user to Xero's authorization URL.
+- Implement a `/callback` route that captures the authorization code, exchanges it for an access token and refresh token, and stores them securely.
+- Automatically handle token expiration using the 'offline_access' scope and refreshing tokens via the Xero refresh token endpoint.
+- Support multi-tenant switching if the user has multiple Xero organizations connected.
+
+CRITICAL - Xero Scope Updates:
+Xero has recently updated its API to deprecate broad scopes and replace them with precise granular scopes. Do NOT use deprecated scopes like 'accounting.transactions' or 'accounting.reports.read'. 
+Instead, cross-reference the exact required granular scopes from the official page: https://developer.xero.com/documentation/guides/oauth2/scopes
+(For example, use 'accounting.invoices', 'accounting.payments', 'accounting.contacts', etc., depending on the data needed below).
+
+Application Specific Features to Build:
+[INSERT YOUR SPECIFIC APP FEATURES HERE. Example: "Build a dashboard that displays the last 30 days of invoices, allows users to filter by contact, and features a button to sync open invoices to an internal follow-up queue."]
+
+Design & UI:
+- Create a clean, responsive dashboard using Tailwind CSS.
+- Include clear loading states while fetching data from the Xero API.
+- Show an intuitive error message if the Xero token expires or if the user needs to re-authenticate.
