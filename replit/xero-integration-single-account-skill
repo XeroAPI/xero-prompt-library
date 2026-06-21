@@ -1,0 +1,289 @@
+---
+name: xero-integration-single-account
+description: Integrate Xero (accounting, invoices, contacts, financial reports) via the Replit Xero connector. Use whenever a project needs to read or write Xero data — creating invoices/contacts, pushing orders, invoices, or bills to Xero, listing accounts, running financial reports, or showing connection status. Covers the connectors-sdk proxy pattern, correct REST paths, tenant header, scopes, OAuth redirect URI, date/money normalisation, idempotent writes, and strict failure handling. Read this before writing any Xero code; do NOT rely on generic xero-node knowledge.
+---
+# Xero integration (via the Replit connector)
+Xero on Replit is accessed through the **Replit connector** using the
+**`@replit/connectors-sdk` proxy pattern** — NOT `xero-node`, and NOT manual
+OAuth/token fetching. The SDK injects the OAuth2 bearer token and handles
+refresh; you call Xero's REST API through a thin proxy.
+If you reach for `xero-node` or start writing token-refresh code, stop — you are
+on the wrong path. Everything below is the sanctioned approach **for the
+single-tenant case** (read the next section to confirm that's you).
+
+## Single-tenant vs. multi-tenant — decide this FIRST
+
+The Replit connector is **single-principal by design**: one Xero authorization —
+the *builder's* — powers the app, and **every end user of the deployed app shares
+that same upstream credential.** It is NOT a per-user token vault.
+
+Use the Replit connector (this skill) when **your app talks to *your own* Xero**:
+internal tools, dashboards over your own books, a single-merchant storefront,
+prototypes. This is the common case.
+
+Do NOT use the Replit connector when **each end user must connect *their own*
+Xero account** with their own tokens (a true multi-tenant SaaS). The connector
+cannot do this — even the Enterprise "bring your own OAuth app" option is still
+one org-level credential, not per-end-user tokens. For that you must drop the
+connector, use **`xero-node`**, and store per-user tokens yourself. **See the
+`xero-integration-multi-account` skill** — that is the one place where `xero-node` is the
+correct tool and the "no xero-node" rule above does NOT apply.
+
+> **Gotcha that fools people:** `GET /connections` returning an array is **NOT**
+> multi-tenancy. That array is Xero's concept of multiple *organisations*
+> reachable under the **one** authorized login. If you can see 3 Xero orgs you'll
+> get 3 tenants — but they all hang off your single authorization. It does not
+> let each of your app's customers bring their own independent Xero login.
+
+Everything below assumes the single-tenant case.
+
+## Setup checklist
+1. **Confirm the connector is connected** (see the `integrations` skill). The
+   connection is BYO-credentials: the user supplies their own Xero app's Client
+   ID/Secret and registers the redirect URI.
+2. **Bind the Repl to the connection.** Connecting the integration is not enough
+   — the running Repl must be bound to it (via the `integrations` skill, e.g.
+   `proposeIntegration(...)` / `addIntegration(...)`). **Until the Repl is bound,
+   every live call fails with `401` and a body like
+   `No connection found for replid ... with connector: xero`.** If you see that
+   401, the code is probably fine — the binding is missing. Do this before any
+   live verification.
+3. **Install the SDK into the specific server package**, never at the workspace
+   root: `pnpm --filter @workspace/<server> add @replit/connectors-sdk`.
+4. **Isolate ALL Xero access in one module** (e.g. `src/lib/xero.ts`). Nothing
+   outside that module should touch the connector or know about Xero paths.
+
+### Connector registration gotchas
+- **Redirect URI** to register in the Xero app is exactly
+  `https://replit.com/connectors/oauth/callback` — no trailing slash, and NOT
+  `connectors.replit.com/...`.
+- **Scopes** — see the dedicated section below. Request the minimum set for what
+  you're doing; for the typical invoice flow that's
+  `offline_access openid email profile accounting.settings.read accounting.invoices accounting.contacts`.
+- If the connector config is stale/broken, reset it via Replit
+  Integrations → Manage, then reconnect.
+
+## Scopes
+Scopes are **additive** — request the minimum needed and re-run the OAuth flow to
+add more later. To get a refresh token you must include `offline_access`.
+### User / OpenID scopes (single sign-on, identity)
+| Scope | Description |
+| --- | --- |
+| `offline_access` | required for a refresh token (offline connection) |
+| `openid` | use the user's identity |
+| `profile` | first name, last name, full name, Xero user id |
+| `email` | email address |
+### Accounting API — granular migration
+Xero is replacing **broad** scopes with **granular** ones. Since **March 2026**
+all new and existing Web/PKCE apps are assigned granular scopes; custom
+connections since **29 April 2026**. Broad scopes keep working for apps that
+already used them only until **September 2027**. **Always prefer the granular
+scopes** — use `accounting.invoices`, NOT `accounting.transactions`.
+Deprecated broad scope → the granular scopes that replace it:
+| Deprecated (broad) | New granular scopes |
+| --- | --- |
+| `accounting.transactions` | `accounting.invoices`, `accounting.payments`, `accounting.banktransactions`, `accounting.manualjournals` |
+| `accounting.transactions.read` | `accounting.invoices.read`, `accounting.payments.read`, `accounting.banktransactions.read`, `accounting.manualjournals.read` |
+| `accounting.reports.read` | `accounting.reports.aged.read`, `accounting.reports.balancesheet.read`, `accounting.reports.banksummary.read`, `accounting.reports.budgetsummary.read`, `accounting.reports.executivesummary.read`, `accounting.reports.profitandloss.read`, `accounting.reports.trialbalance.read`, `accounting.reports.taxreports.read` |
+What each granular scope covers (read variants are the same but GET-only):
+| Scope | Grants |
+| --- | --- |
+| `accounting.invoices` | Invoices, CreditNotes, Quotes, PurchaseOrders, RepeatingInvoices, LinkedTransactions, Items |
+| `accounting.payments` | Payments, BatchPayments, Overpayments, Prepayments |
+| `accounting.banktransactions` | BankTransactions, BankTransfers |
+| `accounting.manualjournals` | ManualJournals |
+| `accounting.reports.aged.read` | Aged Payables/Receivables by Contact |
+| `accounting.reports.balancesheet.read` | BalanceSheet |
+| `accounting.reports.banksummary.read` | BankSummary |
+| `accounting.reports.budgetsummary.read` | BudgetSummary |
+| `accounting.reports.executivesummary.read` | ExecutiveSummary |
+| `accounting.reports.profitandloss.read` | ProfitAndLoss |
+| `accounting.reports.trialbalance.read` | TrialBalance |
+| `accounting.reports.taxreports.read` | GSTReport, BASReport |
+### Accounting scopes that were never broad (use as-is)
+| Scope | Grants |
+| --- | --- |
+| `accounting.settings` / `accounting.settings.read` | Accounts, BrandingThemes, Currencies, Items, InvoiceReminders, Organisation, TaxRates, TrackingCategories, Users |
+| `accounting.contacts` / `accounting.contacts.read` | Contacts, ContactGroups |
+| `accounting.attachments` / `accounting.attachments.read` | attachments across most resources |
+| `accounting.journals.read` | Journals (general ledger) |
+| `accounting.budgets.read` | Budgets |
+| `accounting.reports.tenninetynine.read` | 1099 report (US) |
+Source of truth (re-check periodically — dates and assignments change):
+https://developer.xero.com/documentation/guides/oauth2/scopes
+
+## The proxy pattern
+```ts
+import { ReplitConnectors } from "@replit/connectors-sdk";
+// Never cache this — create a fresh instance per request (tokens rotate).
+const connectors = new ReplitConnectors();
+// Returns a RAW Response (fetch-like) — you must call .json() yourself.
+const res = await connectors.proxy("xero", path, { method, headers, body });
+```
+
+## CRITICAL: path mapping
+The proxy forwards `path` **verbatim** to `https://api.xero.com`. The
+connector blueprint advertises friendly aliases like `/accounting/contacts` and
+`/accounting/invoices` — **these are wrong and return 404.** Use Xero's real
+REST paths with PascalCase resource names. **The paths below are verified — trust
+them, do not re-probe.**
+| Purpose | Path |
+| --- | --- |
+| List connected orgs (get tenant) | `GET /connections` |
+| Look up contact by email | `GET /api.xro/2.0/Contacts?where=EmailAddress=="..."` |
+| Create contact | `POST /api.xro/2.0/Contacts` |
+| Create invoice | `POST /api.xro/2.0/Invoices` |
+| Online invoice URL | `GET /api.xro/2.0/Invoices/{InvoiceID}/OnlineInvoice` |
+| Org details | `GET /api.xro/2.0/Organisations` |
+| Chart of accounts | `GET /api.xro/2.0/Accounts` |
+Verified empirically: `/connections` → 200, `/accounting/organisations` → 404,
+`/api.xro/2.0/Organisations` → 200.
+**For a path NOT in the table above** (bills, credit notes, payments, reports,
+etc.), follow the same convention — `/api.xro/2.0/<PascalCaseResource>` — and
+probe it **read-only first** rather than guessing, by running a small script
+inside the server package:
+`pnpm --filter @workspace/<server> exec node probe.mjs`. The proxy only works
+where the SDK resolves and the connector identity env is present, so probe there,
+not from an arbitrary shell.
+## Tenant header (required on every accounting call)
+The proxy injects the **token** but NOT the **tenant**. Every `/api.xro/2.0/*`
+call needs a `Xero-tenant-id` header.
+- Get the tenant from `GET /connections`, which returns a **top-level array**
+  (not wrapped): `[0].tenantId` is the id; `[0].tenantName` is the org display
+  name (use it for a connection-status page).
+- Always send `Accept: application/json`; add `Content-Type: application/json`
+  on POSTs. Add `Idempotency-Key` on writes (see the idempotency section).
+```ts
+function accountingHeaders(
+  tenantId: string,
+  opts: { withBody?: boolean; idempotencyKey?: string } = {},
+) {
+  const h: Record<string, string> = {
+    Accept: "application/json",
+    "Xero-tenant-id": tenantId,
+  };
+  if (opts.withBody) h["Content-Type"] = "application/json";
+  if (opts.idempotencyKey) h["Idempotency-Key"] = opts.idempotencyKey;
+  return h;
+}
+```
+
+## Request/response shapes
+Xero JSON is **PascalCase**, and every collection — both in request bodies and
+responses — is **wrapped under a PascalCase plural key**. This is uniform across
+the API: `Contacts`, `Invoices`, `CreditNotes`, `Payments`, `Accounts`,
+`OnlineInvoices`, etc. Learn the pattern once; it applies to every resource, not
+just the invoice flow shown here.
+```jsonc
+// POST /api.xro/2.0/Contacts
+{ "Contacts": [{ "Name": "...", "EmailAddress": "..." }] }
+// POST /api.xro/2.0/Invoices  (ACCREC = accounts-receivable / sales invoice)
+{ "Invoices": [{
+  "Type": "ACCREC",
+  "Contact": { "ContactID": "..." },
+  "LineItems": [{ "Description": "...", "Quantity": 1, "UnitAmount": 2495, "AccountCode": "200" }],
+  "Date": "2026-06-19",        // YYYY-MM-DD
+  "DueDate": "2026-07-03",
+  "Status": "AUTHORISED"
+}] }
+```
+The numbers above are illustrative. **Any price, currency, account code, due
+date, and line description should come from your own server-side source of truth
+— never from client input.** A bill is the same shape with `"Type": "ACCPAY"`;
+other resources (credit notes, payments) follow the identical wrap-and-PascalCase
+convention.
+Responses come back wrapped too: `{ "Contacts": [...] }`,
+`{ "Invoices": [...] }`, `{ "OnlineInvoices": [{ "OnlineInvoiceUrl": "..." }] }`.
+
+## Date + money normalisation
+- Xero REST returns dates as `/Date(1518685950940+0000)/`, which `new Date()`
+  **cannot** parse. Write a normaliser that handles both that form and ISO, and
+  run every Xero date through it before storing/serialising. Emit ISO 8601.
+  ```ts
+  export function normalizeXeroDate(v: unknown): Date | null {
+    if (v == null) return null;
+    if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+    if (typeof v === "string") {
+      const m = v.match(/\/Date\((-?\d+)([+-]\d{4})?\)\//);
+      const d = m ? new Date(Number(m[1])) : new Date(v);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return null;
+  }
+  ```
+- Money: Xero `AmountDue` comes back as a **number**. If you store money in
+  Postgres `numeric` (returned as strings by Drizzle), convert to numbers before
+  any Zod response parse.
+- **Tax is the org's, not yours.** The connected organisation's tax config is
+  applied to the invoice, so `AmountDue` may exceed the line total — e.g. a 15%
+  GST demo org turns a 2495 line into 2869.25. The `UnitAmount` you posted is
+  still correct; do not "fix" this discrepancy.
+
+## Idempotency (avoid duplicate writes)
+Writes can be duplicated by retries and double-clicks. Defend at two layers.
+**Layer 1 — app level (cheapest):** don't call Xero twice for the same logical
+action. An upsert-by-email contact lookup already dedups contacts. For the order
+itself, dedup on a stable identifier (e.g. a client-supplied request token, or a
+DB unique constraint) so a double-submitted form doesn't even reach Xero twice.
+**Layer 2 — Xero idempotency (the safety net):** send an `Idempotency-Key`
+header on the mutating call. Xero caches the first response and returns it for
+any repeat with the same key, so a network-timeout retry can't create a second
+invoice.
+Rules that bite (from Xero's idempotency guide):
+- **Only POST/PUT/PATCH** honour the key; it is ignored on GET.
+- **Max 128 characters.** A single `crypto.randomUUID()` (36 chars) is plenty
+  unique — use that as the default. Xero's "concatenate four UUIDs" advice is for
+  extreme volume; if you do that, strip hyphens (4 × 32 = 128) to stay in limit.
+- **Keys expire after ~6 minutes.** They protect transient retries, not
+  long-term dedup. Long-term dedup is Layer 1's job.
+- **Same key + a *different* request → `400` "used with a different request".**
+  A request differs if the URL, body, or method changes. So persist the key
+  alongside the record and reuse the *identical* request when retrying.
+- **Errors are cached too.** If the keyed request errored internally, retrying
+  with the *same* key returns the *same cached error* even after the underlying
+  problem is fixed. To recover, **GET to check whether the resource was actually
+  created**; if not, create again with a **new** key.
+Practical pattern for an order → invoice flow:
+```ts
+import { randomUUID } from "node:crypto";
+// Generate once per order attempt; persist it on the local record so an
+// immediate transient retry reuses the exact same key.
+const idempotencyKey = order.idempotencyKey ?? randomUUID();
+const res = await connectors.proxy("xero", "/api.xro/2.0/Invoices", {
+  method: "POST",
+  headers: accountingHeaders(tenantId, { withBody: true, idempotencyKey }),
+  body: JSON.stringify(invoiceBody),
+});
+```
+When a user *re-submits* a previously **failed** order later, mint a **new** key
+(the old one has expired, and if it hasn't, a cached error would block you) —
+but first GET to confirm no invoice was actually created, so you don't duplicate
+one that silently succeeded.
+## Failure handling (the rule that bites)
+A common requirement is: *"if ANY Xero call fails, persist the record locally
+with a `failed` status."* To honour that, **every** sub-call must throw on a
+non-OK response — including the ones that feel optional:
+- The contact **lookup** (a 401/429/500 is a real failure, not a cache miss —
+  do not silently fall through to creating a contact).
+- The **online-invoice URL** fetch (do NOT wrap it in a try/catch that swallows
+  the error).
+Pattern: check `res.ok`; on failure throw an error that includes the status and
+a truncated body, and let the route-level catch mark the record `failed`.
+```ts
+if (!res.ok) {
+  throw new Error(`Xero <call> failed (${res.status}): ${(await res.text()).slice(0, 500)}`);
+}
+```
+Note the interaction with idempotency: a **received** non-OK response is a
+definitive answer — inspect the status and handle it (4xx = fix the request, 5xx
+= retriable). A **missing** response (timeout / dropped connection) is the case
+idempotency makes safe to retry with the same key.
+## Verify
+Test the full flow live against the connected org (after the Repl is bound — see
+the setup checklist):
+1. A write produces a real Xero record (e.g. an AUTHORISED invoice with an online
+   invoice URL).
+2. When Xero is unreachable, the local record saves with status `failed` and the
+   error message.
+3. Re-sending the same write with the same `Idempotency-Key` returns the original
+   record, not a duplicate.
