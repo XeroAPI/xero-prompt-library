@@ -1,55 +1,25 @@
-Create a full-stack web application that integrates with the Xero API using the OAuth 2.0 Authorization Code Flow (Web App type — not Custom Connections or Client Credentials).
+Build "The Executive" — a full-stack luxury single-product e-commerce site
+selling one beltless trenchcoat at £2,495 (GBP).
 
-Tech Stack:
+DESIGN
+Luxury aesthetic, restrained and editorial. No emojis anywhere.
 
-Backend: Node.js / Express
-Frontend: React / Vite with Tailwind CSS
-Database: PostgreSQL (via Drizzle ORM) to store orders and Xero tokens
-Environment secrets: XERO_CLIENT_ID, XERO_CLIENT_SECRET, SESSION_SECRET (set XERO_REDIRECT_URI automatically from the Replit dev domain)
-Xero OAuth Flow:
+Pages: landing (/), order form (/order), orders list (/orders),
+order detail (/orders/:id), admin dashboard (/dashboard).
 
-/api/login — redirects user to Xero's authorization page
-/api/callback — exchanges the auth code for tokens and stores them in the database
-/api/auth/status — returns { connected, tenantName, tenantId, loginUrl }
-/api/logout — clears stored tokens
-Auto-refresh tokens when within 5 minutes of expiry using offline_access scope
-Store only one Xero organization at a time (single-row token table, cleared and replaced on each login)
-Xero Scopes (use exactly these — do not use deprecated scopes like accounting.transactions):
+PRODUCT (server-side source of truth)
+Define the product as a server-side constant: name, price 2495, currency GBP,
+account code "200", available sizes and colours.
+NEVER take unit price, currency, or account code from the client — only
+size, colour, quantity, customer name, and email come from the request.
 
-offline_access openid profile email accounting.contacts accounting.invoices accounting.settings.read
+ORDER → XERO FLOW (on POST /orders)
+Use the Xero connector to: upsert the contact by email, create an AUTHORISED
+ACCREC invoice (14-day due, single line item describing the coat with
+colour + size, chosen quantity, unit 2495, account code "200"), then fetch
+the online invoice URL and direct a user to it in order to pay.
 
-Application: Premium Single-Product E-Commerce Site
-
-Build a luxury e-commerce website to sell a single product called "The Executive" — a beltless trenchcoat priced at £2,495.
-
-Sizes: XS, S, M, L, XL, XXL
-Colors: Midnight Black, Stone Grey, Navy
-Pages:
-
-/ — Full-screen cinematic hero landing page with product image, brand statement, and "Acquire Now" CTA. Dark, editorial, restrained-luxury aesthetic — think Loro Piana or Brunello Cucinelli. No clutter, generous whitespace.
-/order — Order form: first name, last name, email, phone, address, city, country, size, color, quantity (1–10), optional notes. On submit: create a Xero contact + invoice, store the order in the DB. Show a success screen with a prominent "Pay Now" button linking to the Xero online invoice payment URL.
-/orders — Order history list with status badges.
-/orders/:id — Order detail: customer info, product, Xero invoice ID, payment link.
-/dashboard — Xero summary: total revenue, total/paid/unpaid invoice counts, recent invoices table with payment links. Show a "Connect Xero" CTA (linking to /api/login) when not authenticated.
-Backend API routes:
-
-GET /api/auth/status
-GET /api/login (redirect to Xero)
-GET /api/callback (OAuth callback)
-GET /api/logout
-GET /api/orders — list all orders
-POST /api/orders — create order → Xero contact + invoice → return { order, paymentUrl, invoiceId }
-GET /api/orders/:id — get single order
-GET /api/xero/summary — returns { totalRevenue, totalInvoices, paidInvoices, unpaidInvoices, recentInvoices[] }
-Xero integration logic (per order):
-
-Create or upsert a Xero Contact (name, email, phone)
-Create an authorised ACCREC Invoice with a 14-day due date, line item: product description (including size + color), quantity, unit amount £2,495, account code 200
-Fetch the online invoice URL via GET /Invoices/{id}/OnlineInvoice — return this as the payment URL
-If Xero fails, still save the order with status failed — do not lose the order
-Design direction:
-
-Generate bespoke editorial imagery using AI image generation (cinematic, dark, fashion-editorial style)
-Typography: Cinzel (serif display) + Jost (sans body) from Google Fonts
-Palette: near-black background, white text, zero-radius borders — restrained luxury
-No emojis anywhere in the UI
+Persist every order to the database. If ANY Xero sub-call fails, save the order
+with status "failed" plus the error message.
+Follow the xero-integration-single-account skill for all connector mechanics, paths,
+scopes, headers, and date/money normalisation.
