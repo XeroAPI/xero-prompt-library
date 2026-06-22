@@ -54,6 +54,9 @@ Everything below assumes the single-tenant case.
    outside that module should touch the connector or know about Xero paths.
 
 ### Connector registration gotchas
+- **App type** - must be a "Web app" type app created at https://developer.xero.com
+  If the Xero connector is not connected direct the user to create a web app and
+  help them set the Client ID, Client Secret, and scopes. The authorise the connection.
 - **Redirect URI** to register in the Xero app is exactly
   `https://replit.com/connectors/oauth/callback` — no trailing slash, and NOT
   `connectors.replit.com/...`.
