@@ -1,0 +1,452 @@
+---
+name: xero-integration-multi-tenant
+description: Build a MULTI-TENANT Xero integration where EACH end user of the app connects THEIR OWN Xero organisation, with their own access + refresh tokens. Use whenever building a multi-tenant SaaS on Xero — every customer authorizes their own Xero and the app acts as that customer. Covers the full OAuth2 + PKCE lifecycle with the official `xero-node` SDK, per-user encrypted token storage, refresh/rotation, tenant selection, scopes (including the granular-scope migration), and the Xero API gotchas that bite in production (date/money/tax normalisation, idempotent writes, rate limits). Read this BEFORE writing any multi-tenant Xero code. If instead the app talks to a SINGLE Xero org that the builder owns, do NOT use this flow — see "Do you actually need this?" at the top for the much simpler single-tenant approach.
+---
+
+# Multi-tenant Xero (each user connects their own Xero)
+
+This skill is for a **multi-tenant SaaS**: every customer links **their own** Xero
+organisation, and the app reads/writes Xero **as that customer**, with **their**
+tokens. That means owning the entire OAuth2 lifecycle yourself.
+
+## Do you actually need this?
+
+Multi-tenant is real work — a per-user token vault, refresh rotation, tenant
+selection. Don't take it on unless the app genuinely needs it. If the app talks to
+a **single** Xero that the *builder* owns — an internal tool, a dashboard over your
+own books, a single-merchant storefront, a prototype — **stop and use the
+single-tenant approach instead**:
+
+- **Custom Connection** (recommended for single-org, server-to-server): a
+  machine-to-machine OAuth2 client-credentials app tied to **one** organisation. No
+  user-facing consent redirect, no refresh-token rotation to manage — you exchange
+  client id/secret for a short-lived access token and call the API. Set this up in
+  the Xero developer portal as a *Custom Connection* app.
+- **A single stored refresh token**: register a normal Web App, run the consent
+  flow **once** yourself, and persist the one resulting token set. Same `xero-node`
+  SDK as below, but one token row instead of a vault.
+
+Use this multi-tenant skill **only** when each end user must connect their *own*
+Xero. The rest of this document assumes that.
+
+> **Don't confuse Xero multi-org with multi-tenant.** `GET /connections` returns
+> several *organisations* under ONE login — that is still one principal. Multi-tenant
+> means many *separate* Xero logins, one per customer.
+
+## Decision check before building
+
+Build the full flow below only if ALL of these are true:
+
+- Each customer connects their **own** Xero org (not yours).
+- The app acts under **each customer's** Xero identity, not a shared one.
+- You can securely store and rotate per-user refresh tokens.
+
+If any is false, the single-tenant approach above is enough.
+
+## Use the official SDK: `xero-node`
+
+Multi-tenant means you own app registration, the per-user consent redirect, the
+callback, token storage keyed by *your* user, refresh, and sending the right tenant
+on every call. The official SDK handles PKCE, the code exchange, refresh, and date
+parsing for you, so use it:
+
+```bash
+# Install in whichever package owns your server code. Match the repo's package
+# manager — check for the lockfile first:
+#   pnpm-lock.yaml  -> pnpm add xero-node
+#   package-lock.json -> npm install xero-node
+#   yarn.lock       -> yarn add xero-node
+#   bun.lockb       -> bun add xero-node
+npm install xero-node
+```
+
+Keep **all** Xero access in one provider module so paths, tenant handling, refresh,
+and the gotchas below live in one place. Don't scatter token logic across the codebase.
+
+## 1. Register your own Xero app
+
+In the Xero developer portal (developer.xero.com) create a **Web App** OAuth2 app:
+
+- Grab the **Client ID** and **Client Secret**.
+- Register your redirect URI **exactly** — scheme, host, port, and path must match
+  byte-for-byte what your code sends, or the callback fails. Register both prod and
+  local dev (Xero allows multiple redirect URIs):
+  - prod: `https://your-app.example.com/oauth/xero/callback`
+  - local: `http://localhost:3000/oauth/xero/callback`  *(adjust the port to your dev server)*
+
+  Xero permits `http://localhost` for development; every other redirect must be
+  `https`. **Tell the user the exact redirect URIs to register for their prod and
+  dev domains** rather than guessing.
+- Decide your scopes (see the **Scopes** section). You MUST include
+  **`offline_access`** or Xero returns no refresh token.
+
+Store **only your app's** Client ID/Secret as environment variables via your secret
+manager — a local `.env` that is git-ignored for development, and your platform's
+secret store in production. Also add a 32-byte **`TOKEN_ENC_KEY`** (base64) for
+encrypting stored tokens. **Never commit secrets, and never put per-user tokens in
+env** — those go in the database, encrypted.
+
+## Scopes
+
+Scopes are **additive** — request the minimum needed and re-run the OAuth consent
+flow to add more later. You **cannot** widen scope on an existing token; the user
+must re-consent. To get a refresh token at all you must include `offline_access`.
+
+### User / OpenID scopes (identity)
+
+| Scope | Description |
+| --- | --- |
+| `offline_access` | required for a refresh token (offline connection) |
+| `openid` | use the user's identity |
+| `profile` | first name, last name, full name, Xero user id |
+| `email` | email address |
+
+### Accounting API — prefer granular scopes
+
+Xero is replacing **broad** scopes with **granular** ones. Since **March 2026** all
+new and existing Web/PKCE apps are assigned granular scopes; custom connections
+since **29 April 2026**. Broad scopes keep working for apps that already used them
+only until **September 2027**. **Always prefer the granular scopes** — use
+`accounting.invoices`, NOT `accounting.transactions`.
+
+Deprecated broad scope → the granular scopes that replace it:
+
+| Deprecated (broad) | New granular scopes |
+| --- | --- |
+| `accounting.transactions` | `accounting.invoices`, `accounting.payments`, `accounting.banktransactions`, `accounting.manualjournals` |
+| `accounting.transactions.read` | `accounting.invoices.read`, `accounting.payments.read`, `accounting.banktransactions.read`, `accounting.manualjournals.read` |
+| `accounting.reports.read` | `accounting.reports.aged.read`, `accounting.reports.balancesheet.read`, `accounting.reports.banksummary.read`, `accounting.reports.budgetsummary.read`, `accounting.reports.executivesummary.read`, `accounting.reports.profitandloss.read`, `accounting.reports.trialbalance.read`, `accounting.reports.taxreports.read` |
+
+What each granular scope covers (read variants are the same but GET-only):
+
+| Scope | Grants |
+| --- | --- |
+| `accounting.invoices` | Invoices, CreditNotes, Quotes, PurchaseOrders, RepeatingInvoices, LinkedTransactions, Items |
+| `accounting.payments` | Payments, BatchPayments, Overpayments, Prepayments |
+| `accounting.banktransactions` | BankTransactions, BankTransfers |
+| `accounting.manualjournals` | ManualJournals |
+| `accounting.reports.*.read` | the matching report only (balancesheet, profitandloss, trialbalance, taxreports = GSTReport/BASReport, etc.) |
+
+### Accounting scopes that were never broad (use as-is)
+
+| Scope | Grants |
+| --- | --- |
+| `accounting.settings` / `accounting.settings.read` | Accounts, BrandingThemes, Currencies, Items, InvoiceReminders, Organisation, TaxRates, TrackingCategories, Users |
+| `accounting.contacts` / `accounting.contacts.read` | Contacts, ContactGroups |
+| `accounting.attachments` / `accounting.attachments.read` | attachments across most resources |
+| `accounting.journals.read` | Journals (general ledger) |
+| `accounting.budgets.read` | Budgets |
+
+A typical invoicing SaaS therefore wants:
+
+```
+openid profile email offline_access accounting.contacts accounting.invoices
+```
+
+Source of truth (re-check periodically — dates and assignments change):
+https://developer.xero.com/documentation/guides/oauth2/scopes
+
+## 2. Per-user token store (database, encrypted)
+
+One row per (user, Xero tenant). `xero-node` hands you a full `tokenSet` — store it
+encrypted as JSON, plus the selected `tenantId`. The example below uses Drizzle +
+Postgres; adapt the column types to whatever ORM/DB the project already uses, but
+keep the shape (your user id, the tenant id, the encrypted token set, the expiry).
+
+```ts
+// schema/xeroConnections.ts
+import { pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+
+export const xeroConnections = pgTable(
+  "xero_connections",
+  {
+    id: serial("id").primaryKey(),
+    userId: text("user_id").notNull(),               // YOUR app's user
+    tenantId: text("tenant_id").notNull(),           // Xero org id
+    tenantName: text("tenant_name"),
+    tokenSetEnc: text("token_set_enc").notNull(),     // ENCRYPTED JSON of the xero-node tokenSet
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uq: uniqueIndex("xero_user_tenant").on(t.userId, t.tenantId) }),
+);
+```
+
+AES-256-GCM helpers (key from `TOKEN_ENC_KEY`):
+
+```ts
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+const KEY = Buffer.from(process.env.TOKEN_ENC_KEY!, "base64"); // 32 bytes
+
+export const encrypt = (plain: string) => {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", KEY, iv);
+  const enc = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+  return [iv, c.getAuthTag(), enc].map((b) => b.toString("base64")).join(".");
+};
+export const decrypt = (blob: string) => {
+  const [iv, tag, enc] = blob.split(".").map((s) => Buffer.from(s, "base64"));
+  const d = createDecipheriv("aes-256-gcm", KEY, iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(enc), d.final()]).toString("utf8");
+};
+```
+
+## 3. The `xero-node` client (one per request — never cache)
+
+```ts
+// lib/xeroClient.ts
+import { XeroClient } from "xero-node";
+
+export const makeXeroClient = (state?: string) =>
+  new XeroClient({
+    clientId: process.env.XERO_CLIENT_ID!,
+    clientSecret: process.env.XERO_CLIENT_SECRET!,
+    redirectUris: [process.env.XERO_REDIRECT_URI!],
+    scopes: (process.env.XERO_SCOPES ??
+      "openid profile email offline_access accounting.contacts accounting.invoices").split(" "),
+    state, // CSRF + carries which of YOUR users started the flow
+  });
+```
+
+Make a fresh client per request and `setTokenSet(...)` from the DB. Do not keep a
+long-lived client — tokens expire and clients are per-user.
+
+## 4. Start consent (per user, with state)
+
+`state` is your CSRF defense and your link back to the initiating user. Persist it
+server-side (short-lived row, or a signed cookie bound to the session) — never trust
+it blind on return. `xero-node` does PKCE internally.
+
+```ts
+// GET /oauth/xero/start
+const state = randomBytes(16).toString("base64url");
+await saveFlowState({ state, userId: req.user.id, expiresAt: Date.now() + 10 * 60_000 });
+const xero = makeXeroClient(state);
+const consentUrl = await xero.buildConsentUrl();
+res.redirect(consentUrl);
+```
+
+### Local-dev gotchas (these bite during testing)
+
+- **Redirect URI must match exactly.** The most common local failure is a port or
+  trailing-slash mismatch between `XERO_REDIRECT_URI` and what's registered in the
+  portal. If consent returns `unauthorized_client` or an invalid-redirect error,
+  this is almost always why. Run the dev server on the same port you registered.
+- **`http://localhost` only.** Xero accepts `http` solely for `localhost`; any other
+  host (including `127.0.0.1` in some setups, or a LAN IP) must be `https`. Use a
+  real `localhost` URL in dev.
+- **Don't embed the consent page in an iframe.** Xero's login page sets
+  `frame-ancestors` and refuses to be framed — a same-frame redirect from inside an
+  embedded preview/iframe shows a **blank white page**. If your front end runs in an
+  iframe context, open consent as a top-level navigation (a new tab), and open the
+  tab **synchronously inside the click handler** (before the `await` that fetches the
+  URL) so the browser doesn't block it as a popup:
+
+  ```ts
+  const inIframe = window.self !== window.top;
+  const popup = inIframe ? window.open("about:blank", "_blank") : null;
+  const { url } = await fetchConsentUrl();   // your GET /oauth/xero/start
+  if (popup) popup.location.href = url;      // iframe: new tab
+  else window.location.href = url;           // normal: same tab
+  ```
+
+  A normally-served app isn't iframed, so a plain same-tab redirect is fine — handle
+  both if you're unsure of the embedding context.
+
+## 5. Callback — exchange, pick tenant(s), store
+
+```ts
+// GET /oauth/xero/callback?code=...&state=...
+const flow = await loadFlowState(String(req.query.state)); // must exist, match session, unexpired
+if (!flow) return res.status(400).send("Invalid state");
+
+// MUST recreate the client with the SAME state you used to build the consent URL.
+// `apiCallback` runs openid-client's state check: because the consent URL carries a
+// `state` param, the callback client must also know it, or you get the cryptic
+// `TypeError: checks.state argument is missing` and every connect fails.
+const xero = makeXeroClient(flow.state);
+const tokenSet = await xero.apiCallback(req.url);   // exchanges code (+ PKCE) for tokens
+await xero.updateTenants(false);                    // populates xero.tenants
+
+// A single consent can authorize MULTIPLE Xero orgs that all SHARE ONE token set.
+// Either store all, or let the user choose which org this app should act on. Do NOT
+// assume tenants[0]. Encrypt the token set ONCE and write the identical ciphertext to
+// every row — this lets refresh (below) find and update all sibling rows at once.
+const tokenSetEnc = encrypt(JSON.stringify(tokenSet));
+for (const t of xero.tenants) {
+  await upsertXeroConnection({
+    userId: flow.userId,
+    tenantId: t.tenantId,
+    tenantName: t.tenantName,
+    tokenSetEnc,
+    expiresAt: new Date(tokenSet.expires_at! * 1000),
+  });
+}
+await deleteFlowState(flow.state);
+```
+
+## 6. Use it per request (refresh + persist rotation)
+
+```ts
+async function getXeroFor(userId: string, tenantId: string) {
+  const conn = await loadXeroConnection(userId, tenantId);
+  if (!conn) throw new Error("User has not connected this Xero org");
+
+  const xero = makeXeroClient();
+  await xero.setTokenSet(JSON.parse(decrypt(conn.tokenSetEnc)));
+
+  if (xero.readTokenSet().expired()) {
+    const refreshed = await xero.refreshToken(); // throws if refresh token is dead
+    // CRITICAL multi-tenant trap: when one consent authorized several orgs, they all
+    // share ONE token set. Refreshing rotates the refresh token and INVALIDATES the
+    // old one, so updating only THIS row leaves every sibling org holding a dead token
+    // (they'll wrongly flip to needs_reconnect on their next call). Update ALL rows
+    // that shared the previous token set — e.g. match on the old ciphertext:
+    await updateXeroTokensForSharedSet(conn.userId, conn.tokenSetEnc, {
+      tokenSetEnc: encrypt(JSON.stringify(refreshed)), // refresh token ROTATES — store it
+      expiresAt: new Date(refreshed.expires_at! * 1000),
+    });
+  }
+  return { xero, tenantId };
+}
+
+// Example write (note the explicit tenantId, summarizeErrors, unitdp, idempotency):
+const { xero } = await getXeroFor(userId, tenantId);
+await xero.accountingApi.createInvoices(
+  tenantId,
+  { invoices: [{ /* type, contact, lineItems, ... */ }] },
+  /* summarizeErrors */ false,
+  /* unitdp */ 4,
+  { idempotencyKey: order.idempotencyKey ?? crypto.randomUUID() },
+);
+```
+
+## Date + money + tax normalisation
+
+- **Dates.** The `xero-node` SDK parses Xero's Microsoft-JSON date form
+  (`/Date(1518685950940+0000)/`) into JS `Date` for you. If you ever drop to raw REST
+  (e.g. a paged report endpoint), `new Date()` **cannot** parse that string — run it
+  through a normaliser and emit ISO 8601:
+
+  ```ts
+  export function normalizeXeroDate(v: unknown): Date | null {
+    if (v == null) return null;
+    if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+    if (typeof v === "string") {
+      const m = v.match(/\/Date\((-?\d+)([+-]\d{4})?\)\//);
+      const d = m ? new Date(Number(m[1])) : new Date(v);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return null;
+  }
+  ```
+
+  When **sending** dates, use `YYYY-MM-DD`.
+
+- **Money.** Pass numbers, not pre-formatted currency strings. Control rounding with
+  the `unitdp` (unit decimal places, up to 4) argument on create calls. If you store
+  money in Postgres `numeric` (returned as strings by Drizzle), convert back to
+  numbers before any response validation/parse. Amounts like `AmountDue` come back as
+  numbers.
+
+- **Tax is the org's, not yours.** Each connected organisation applies **its own** tax
+  config to the invoice, so `AmountDue` / `Total` may exceed the sum of your line
+  amounts — e.g. a 15% GST org turns a 2495 line into 2869.25. The `UnitAmount` you
+  posted is still correct; do **not** "fix" this discrepancy. Set `lineAmountTypes`
+  (`Exclusive`, `Inclusive`, `NoTax`) deliberately if you need control. **In
+  multi-tenant this varies per customer** — never hard-code a tax assumption; whatever
+  each org returns is correct for that org.
+
+## Idempotency (avoid duplicate writes)
+
+Writes can be duplicated by retries and double-clicks. Defend at two layers.
+
+**Layer 1 — app level (cheapest):** don't call Xero twice for the same logical
+action. Upsert contacts by email (see gotchas) and dedup the order itself on a stable
+identifier (client-supplied token, or a DB unique constraint) so a double-submitted
+form never reaches Xero twice.
+
+**Layer 2 — Xero idempotency (the safety net):** pass an idempotency key on the
+mutating call (`xero-node`: the `{ idempotencyKey }` options argument; raw REST: the
+`Idempotency-Key` header). Xero caches the first response and returns it for any
+repeat with the same key, so a network-timeout retry can't create a second invoice.
+
+Rules that bite (from Xero's idempotency guide):
+
+- **Only POST/PUT/PATCH** honour the key; it is ignored on GET.
+- **Max 128 characters.** A single `crypto.randomUUID()` (36 chars) is plenty unique —
+  use that as the default. Xero's "concatenate four UUIDs" advice is for extreme
+  volume; if you do that, strip hyphens (4 × 32 = 128) to stay in limit.
+- **Keys expire after ~6 minutes.** They protect transient retries, not long-term
+  dedup. Long-term dedup is Layer 1's job.
+- **Same key + a *different* request → `400` "used with a different request".** A
+  request differs if the URL, body, or method changes. Persist the key alongside the
+  record and reuse the *identical* request when retrying.
+- **Errors are cached too.** If the keyed request errored internally, retrying with the
+  *same* key returns the *same cached error* even after the underlying problem is
+  fixed. To recover, **GET to check whether the resource was actually created**; if
+  not, create again with a **new** key.
+
+When a user *re-submits* a previously **failed** order later, mint a **new** key (the
+old one has expired, and if it hasn't, a cached error would block you) — but first GET
+to confirm no invoice was actually created, so you don't duplicate one that silently
+succeeded.
+
+## Other Xero gotchas (these bite in production)
+
+- **`offline_access` is mandatory for refresh.** Omit it and you get an access token
+  that dies in ~30 min with no way to refresh — the user must re-consent.
+- **Token lifetimes:** access token ~30 min; refresh token ~60 days and **rotates on
+  every refresh**. You MUST persist the new refresh token each time or the next
+  refresh fails. A refresh token also dies if unused for 60 days.
+- **Always pass `tenantId` explicitly** to every `accountingApi.*` call. There is no
+  implicit "current org." With multiple connected orgs, the wrong tenantId silently
+  writes to the wrong company's books.
+- **`updateTenants()` is required** after callback (and worth re-running periodically)
+  — the connected-org list can change as users add/remove orgs.
+- **Contacts are not auto-deduplicated by email.** Posting an invoice with a new
+  contact name creates a NEW contact every time. Upsert yourself: look up by email (or
+  `ContactID`) via `getContacts` and reuse the id; otherwise you litter the org with
+  duplicates.
+- **Invoice status flow:** `DRAFT` → `SUBMITTED` → `AUTHORISED`. Only `AUTHORISED`
+  invoices are real receivables and expose an online payment URL (`getOnlineInvoice`).
+  Use `ACCREC` (sales) vs `ACCPAY` (bills) correctly.
+- **Rate limits (per tenant):** ~60 calls/minute, 5,000/day, plus an app-wide
+  per-minute cap and ~5 concurrent requests. On **429** read the `Retry-After` header
+  and back off — multi-tenant apps hit this fast when looping over orgs. Spread/queue
+  calls per tenant.
+- **`summarizeErrors`:** pass `false` on batch create calls to get per-item validation
+  errors back instead of one opaque failure.
+
+## Security checklist (do not skip)
+
+- **Encrypt** the stored token set at rest; the key (`TOKEN_ENC_KEY`) lives in your
+  secret manager / env and is never committed.
+- **Verify `state`** on every callback and bind it to the session (CSRF).
+- PKCE is handled by `xero-node` — don't disable it.
+- **Never expose tokens to the browser** or any client-readable storage.
+- On a failed refresh, **mark the connection broken and prompt re-connect** — do not
+  silently retry forever.
+- Keep all Xero access in **one module** so paths, tenant handling, and gotchas live
+  in one place.
+- Add `.env` (and any local token dumps) to `.gitignore`; never commit credentials.
+
+## Don't want to hand-roll it?
+
+Managed token-vault platforms (**Nango**, **Composio**, etc.) implement per-user OAuth
++ refresh + encryption for Xero and many other providers. For a multi-provider SaaS
+this is often the pragmatic choice — you still call the Xero API the same way, but the
+vault and rotation are managed for you.
+
+## Verify
+
+1. Two app users each connect a **different** Xero org; confirm two distinct token rows
+   and that each user's writes land in their own org (check `tenantId`).
+2. Force a near-expiry token and confirm transparent refresh **and** that the rotated
+   refresh token is persisted.
+3. Revoke the app in one user's Xero and confirm your app surfaces a "reconnect" state
+   instead of looping on failed refreshes.
+4. Post the same invoice twice with the same idempotency key and confirm only one
+   invoice is created.
