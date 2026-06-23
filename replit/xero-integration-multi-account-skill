@@ -206,6 +206,25 @@ const consentUrl = await xero.buildConsentUrl();
 res.redirect(consentUrl);
 ```
 
+**Replit preview gotcha (iframe).** The Replit dev preview and Canvas render your app
+inside an iframe, and Xero's login page refuses to be framed (`frame-ancestors`), so a
+same-frame `window.location.href = consentUrl` from the SPA shows a **blank white page**.
+Detect the iframe (`window.self !== window.top`) and open the consent flow in a new
+top-level tab instead. Open the tab **synchronously inside the click handler** (before
+the `await` that fetches the consent URL) so the browser doesn't block it as a popup:
+
+```ts
+const inIframe = window.self !== window.top;
+const popup = inIframe ? window.open("about:blank", "_blank") : null;
+const { url } = await fetchConsentUrl();          // your GET /oauth/xero/start
+if (popup) popup.location.href = url;             // iframe: new tab
+else window.location.href = url;                  // published app: same tab
+```
+
+The deployed app is **not** iframed, so plain same-tab redirect works in production —
+handle both. After OAuth the callback returns to your app in whichever tab is active;
+let TanStack Query's refetch-on-focus refresh the connection list in the original tab.
+
 ## 5. Callback — exchange, pick tenant(s), store
 
 ```ts
@@ -213,18 +232,25 @@ res.redirect(consentUrl);
 const flow = await loadFlowState(String(req.query.state)); // must exist, match session, unexpired
 if (!flow) return res.status(400).send("Invalid state");
 
-const xero = makeXeroClient();
+// MUST recreate the client with the SAME state you used to build the consent URL.
+// `apiCallback` runs openid-client's state check: because the consent URL carries a
+// `state` param, the callback client must also know it, or you get the cryptic
+// `TypeError: checks.state argument is missing` and every connect fails.
+const xero = makeXeroClient(flow.state);
 const tokenSet = await xero.apiCallback(req.url);   // exchanges code (+ PKCE) for tokens
 await xero.updateTenants(false);                    // populates xero.tenants
 
-// A single consent can authorize MULTIPLE Xero orgs. Either store all, or let the
-// user choose which org this app should act on. Do NOT assume tenants[0].
+// A single consent can authorize MULTIPLE Xero orgs that all SHARE ONE token set.
+// Either store all, or let the user choose which org this app should act on. Do NOT
+// assume tenants[0]. Encrypt the token set ONCE and write the identical ciphertext to
+// every row — this lets refresh (below) find and update all sibling rows at once.
+const tokenSetEnc = encrypt(JSON.stringify(tokenSet));
 for (const t of xero.tenants) {
   await upsertXeroConnection({
     userId: flow.userId,
     tenantId: t.tenantId,
     tenantName: t.tenantName,
-    tokenSetEnc: encrypt(JSON.stringify(tokenSet)),
+    tokenSetEnc,
     expiresAt: new Date(tokenSet.expires_at! * 1000),
   });
 }
@@ -243,7 +269,12 @@ async function getXeroFor(userId: string, tenantId: string) {
 
   if (xero.readTokenSet().expired()) {
     const refreshed = await xero.refreshToken(); // throws if refresh token is dead
-    await updateXeroTokens(conn.id, {
+    // CRITICAL multi-tenant trap: when one consent authorized several orgs, they all
+    // share ONE token set. Refreshing rotates the refresh token and INVALIDATES the
+    // old one, so updating only THIS row leaves every sibling org holding a dead token
+    // (they'll wrongly flip to needs_reconnect on their next call). Update ALL rows
+    // that shared the previous token set — e.g. match on the old ciphertext:
+    await updateXeroTokensForSharedSet(conn.userId, conn.tokenSetEnc, {
       tokenSetEnc: encrypt(JSON.stringify(refreshed)), // refresh token ROTATES — store it
       expiresAt: new Date(refreshed.expires_at! * 1000),
     });
