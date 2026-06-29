@@ -1,6 +1,6 @@
 ---
 name: xero-integration-single-account
-description: Use when YOU (the app builder) connect ONE Xero organisation that you own, and the whole app reads/writes that single set of books — internal dashboards, a single-merchant storefront, a back-office tool, or a prototype. Covers the OAuth2 lifecycle in Supabase Edge Functions, one encrypted token set with RLS, refresh/rotation, scopes, and Xero API gotchas (granular scope migration, date/money/tax normalisation, idempotent writes, rate limits). Not for apps where each end user connects their OWN Xero org — use xero-integration-multi-account for that.
+description: Use when YOU (the app builder) connect ONE Xero organisation that you own, and the whole app reads/writes that single set of books — internal dashboards, a single-merchant storefront, a back-office tool, or a prototype. Covers the OAuth2 lifecycle in TanStack Start server functions, one encrypted token set with RLS, refresh/rotation, scopes, and Xero API gotchas (granular scope migration, date/money/tax normalisation, idempotent writes, rate limits). Not for apps where each end user connects their OWN Xero org — use xero-integration-multi-account for that.
 ---
 
 # Single-account Xero (you connect one Xero org you own)
@@ -27,65 +27,55 @@ connection. There are no per-user Xero accounts.
 
 ## Where this code runs in Lovable
 
-Lovable's backend is **Supabase**: Postgres for storage, **Edge Functions (Deno)**
-for server code, Supabase secrets for config. All OAuth and token handling lives in
-**Edge Functions** — never in the React/Vite frontend, never in the browser. Two
-runtime facts shape the code below:
+Lovable's current default stack is **TanStack Start** on a Cloudflare Workers-style
+serverless runtime, with **Supabase** for Postgres and **Lovable Cloud** for
+deployment and secrets. App-internal server logic — including all Xero OAuth and
+token handling — lives in **`createServerFn` server functions**; external callers
+(Xero's browser redirect, webhooks, cron) hit **server routes** under
+`src/routes/api/public/*`. **Do not use Supabase Edge Functions** for any of this.
 
-- **Edge Functions are stateless.** The connect step and the callback are separate
-  cold-start invocations with no shared memory, so the `state` value must be
-  persisted to a table between them.
-- **Use `fetch`, not the `xero-node` SDK, for OAuth.** The SDK keeps OAuth state in
-  process memory, which doesn't survive across two stateless invocations, and its
-  `openid-client` dependency is awkward under Deno. The whole lifecycle is three
-  `fetch` calls (authorize redirect, token exchange, refresh). You *may* use
-  `npm:xero-node` for read/write API calls if it imports in your edge runtime, but
-  keep the flow `fetch`-based. **Crypto is Web Crypto (`crypto.subtle`)**, not Node
-  `crypto`.
+Two runtime facts shape the code below:
 
-**If your Lovable project has its own server runtime, port these handlers to it.**
-Lovable supports stacks beyond the React/Vite + Edge Functions default, and some come
-with explicit guidance *against* using Supabase Edge Functions as the server layer. A
-**TanStack Start** project, for instance, should put this logic in `createServerFn`
-server functions; a Next.js project would use route handlers or server actions. The
-mapping is mechanical: each piece below (`xero-start`, `xero-callback`, and the
-per-request token helper) becomes one server function — only the request/response
-wrapper changes. Everything that matters is identical: persisting `state`, the
-encrypted token row, refresh-rotation persistence, the `Xero-Tenant-Id` header. Two
-things shift on a Node-based runtime: you may use `node:crypto` (or the `xero-node`
-SDK) instead of Web Crypto, since the stateless/Deno objections above are
-Edge-Function-specific; and secrets load via your stack's own env mechanism, so the
-Edge-Function "redeploy after changing a secret" rule (section 1) may not apply. The
-SQL, scopes, idempotency, and Xero gotchas carry over unchanged.
+- The server runtime is stateless across invocations, so the OAuth `state` value
+  must be persisted to a table between the connect step and the callback.
+- Use `fetch` for the OAuth lifecycle (authorize redirect, token exchange, refresh)
+  — three calls, no SDK needed. You *may* use `npm:xero-node` for read/write API
+  calls if it bundles cleanly, but keep the OAuth flow `fetch`-based.
+
+**Crypto is Node `crypto`** (the Worker runtime supports it via `nodejs_compat`);
+the three-part `iv.tag.enc` ciphertext shape below is correct on this stack.
+
+> **If you're working in a legacy Lovable project that still uses Supabase Edge
+> Functions (Deno) as its server layer**, port these handlers to Edge Functions:
+> connect/callback/status become three Edge Functions, secrets are read via
+> `Deno.env.get` (and you must redeploy after changing one), the publicly-reachable
+> callback needs `verify_jwt = false`, and crypto becomes Web Crypto with a
+> two-part `iv.ciphertext` blob (Web Crypto appends the GCM tag to the ciphertext).
+> Everything else — SQL, scopes, idempotency, Xero gotchas — carries over
+> unchanged.
 
 ## 1. Register your own Xero app
 
 In the Xero developer portal (developer.xero.com) create a **Web app** OAuth2 app
-(confidential — it holds a secret, which your Edge Functions can):
+(confidential — it holds a secret, which your server functions can):
 - Grab **Client ID** and **Client Secret**.
-- Register your redirect URI as your **callback Edge Function URL**, exactly:
-  `https://<project-ref>.supabase.co/functions/v1/xero-callback`
-  (your `<project-ref>` is in Lovable's Supabase settings). Add your local dev
-  Supabase URL too if you test locally. **Tell the user explicitly what redirect
-  URIs to register for both their deployed and dev environments.**
+- Register your redirect URI as your **callback server-route URL**, exactly:
+  `https://<your-app>.lovable.app/api/public/xero/callback`
+  Register your preview URL too (e.g. `https://<preview-host>.lovable.app/...`) so
+  you can test consent end-to-end before publishing. **Tell the user explicitly
+  what redirect URIs to register for both their deployed and preview environments.**
 - Decide your scopes (see **Scopes** next). You MUST include **`offline_access`**
   or Xero returns no refresh token.
 
-Store **your app's** Client ID/Secret in **Supabase secrets** (via Lovable's
-Supabase integration), plus a 32-byte **`TOKEN_ENC_KEY`** (base64) for encrypting
-the stored token. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are available to
-Edge Functions automatically. The refresh token **rotates on every refresh**, so it
-must live in a **mutable** store (the database) — never in a Supabase secret.
+Store **your app's** Client ID/Secret as Lovable Cloud secrets (`XERO_CLIENT_ID`,
+`XERO_CLIENT_SECRET`, `XERO_REDIRECT_URI`, `XERO_SCOPES`), plus a base64-encoded
+32-byte **`TOKEN_ENC_KEY`** for encrypting the stored token. `SUPABASE_URL` and
+`SUPABASE_SERVICE_ROLE_KEY` are already available to server functions via
+`process.env`. The refresh token **rotates on every refresh**, so it must live in
+a **mutable** store (the database) — never in a secret.
 
-> **Redeploy after adding or changing any secret — this is the #1 first failure.**
-> Edge Functions snapshot their environment at deploy time and do **not** pick up
-> newly-added or edited secrets until you redeploy them. The classic symptom is a
-> Xero authorize URL containing `client_id=undefined` (or a 401 on the token
-> exchange) immediately after you set `XERO_CLIENT_ID` — the secret exists, but the
-> running function was deployed before it did. Set every secret first, **then**
-> (re)deploy `xero-start` and `xero-callback`. Rotating `TOKEN_ENC_KEY` or the client
-> secret later? Redeploy again. (This rule is Edge-Function-specific — see the
-> stack note above if you're not on Edge Functions.)
+> Read `process.env.*` **inside** `.handler()`, not at module scope. The Worker
+> runtime injects env per-request; a module-level read returns `undefined`.
 
 ## Scopes
 
@@ -163,9 +153,9 @@ openid profile email offline_access accounting.contacts accounting.invoices
 `accounting.invoices.read`.)
 
 Store the chosen string in the `XERO_SCOPES` secret (space-separated). **Make the
-`XERO_SCOPES` fallback in `_shared/xero.ts` match your intent** — the all-`.read`
-default shown there will silently hand you a read-only token if the secret is missing
-or the function wasn't redeployed after you set it, and your first write will 403.
+`XERO_SCOPES` fallback in your shared Xero config match your intent** — an
+all-`.read` default will silently hand you a read-only token if the secret is
+missing, and your first write will 403.
 
 Source of truth (re-check periodically — dates and assignments change):
 https://developer.xero.com/documentation/guides/oauth2/scopes
@@ -187,10 +177,11 @@ create table public.xero_connection (
   expires_at    timestamptz not null,
   updated_at    timestamptz not null default now()
 );
+-- Only the service role (used inside server functions / server routes) may touch this.
+-- Do NOT grant anon/authenticated — the browser must never read token_set_enc.
+grant all on public.xero_connection to service_role;
 alter table public.xero_connection enable row level security;
--- INTENTIONALLY no anon/authenticated policies. Only the service role (used inside
--- Edge Functions) may read or write this table. NEVER let the browser read
--- token_set_enc — surface only derived data (reports, invoices) through your own API.
+-- INTENTIONALLY no anon/authenticated policies.
 
 -- xero_oauth_flows: short-lived CSRF/state handshake between connect and callback
 create table public.xero_oauth_flows (
@@ -198,56 +189,55 @@ create table public.xero_oauth_flows (
   created_at timestamptz not null default now(),
   expires_at timestamptz not null
 );
+grant all on public.xero_oauth_flows to service_role;
 alter table public.xero_oauth_flows enable row level security;  -- service-role only
 ```
 
-AES-256-GCM helpers using **Web Crypto** (Deno). The blob is **two parts**
-(`iv.ciphertext`) because Web Crypto appends the GCM auth tag to the ciphertext — do
-NOT use a Node-style three-part `iv.tag.enc` split, it will fail to decrypt.
+AES-256-GCM helpers using **Node `crypto`**. The blob is three parts
+(`iv.tag.ciphertext`, base64) — this is correct for `node:crypto` GCM, where the
+auth tag is exposed separately. Put helpers in a `.server.ts` file so they're
+blocked from the client bundle.
 
 ```ts
-// supabase/functions/_shared/crypto.ts
-const rawKey = Uint8Array.from(atob(Deno.env.get("TOKEN_ENC_KEY")!), (c) => c.charCodeAt(0)); // 32 bytes
-const key = await crypto.subtle.importKey("raw", rawKey, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-const b64   = (b: Uint8Array) => btoa(String.fromCharCode(...b));
-const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+// src/lib/server/crypto.server.ts
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
-export async function encrypt(plain: string) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(plain));
-  return `${b64(iv)}.${b64(new Uint8Array(ct))}`;
+function key() {
+  return Buffer.from(process.env.TOKEN_ENC_KEY!, "base64"); // 32 bytes
 }
-export async function decrypt(blob: string) {
-  const [iv, ct] = blob.split(".").map(unb64);
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-  return new TextDecoder().decode(pt);
+
+export function encrypt(plain: string) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", key(), iv);
+  const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+  const tag = c.getAuthTag();
+  return `${iv.toString("base64")}.${tag.toString("base64")}.${ct.toString("base64")}`;
+}
+
+export function decrypt(blob: string) {
+  const [iv, tag, ct] = blob.split(".").map((s) => Buffer.from(s, "base64"));
+  const d = createDecipheriv("aes-256-gcm", key(), iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
 }
 ```
 
-Shared service-role client and Xero config:
+Shared Xero config (client-safe constants only — secrets are read inside handlers):
 
 ```ts
-// supabase/functions/_shared/admin.ts
-import { createClient } from "npm:@supabase/supabase-js";
-export const admin = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,   // service role bypasses RLS — Edge Functions only
-);
-
-// supabase/functions/_shared/xero.ts
+// src/lib/xero-config.ts
 export const XERO = {
-  clientId:     Deno.env.get("XERO_CLIENT_ID")!,
-  clientSecret: Deno.env.get("XERO_CLIENT_SECRET")!,
-  redirectUri:  Deno.env.get("XERO_REDIRECT_URI")!,   // the xero-callback function URL
-  scopes:       Deno.env.get("XERO_SCOPES") ?? "openid profile email offline_access accounting.contacts.read accounting.invoices.read",
-  authorize:    "https://login.xero.com/identity/connect/authorize",
-  token:        "https://identity.xero.com/connect/token",
-  connections:  "https://api.xero.com/connections",
-  api:          "https://api.xero.com/api.xro/2.0",
+  authorize:   "https://login.xero.com/identity/connect/authorize",
+  token:       "https://identity.xero.com/connect/token",
+  connections: "https://api.xero.com/connections",
+  api:         "https://api.xero.com/api.xro/2.0",
 };
-export const basicAuth = () => btoa(`${XERO.clientId}:${XERO.clientSecret}`);
-const b64url = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
-export const randomState = () => b64url(crypto.getRandomValues(new Uint8Array(16)));
+export const basicAuth = (id: string, secret: string) =>
+  Buffer.from(`${id}:${secret}`).toString("base64");
+export const randomState = () =>
+  Buffer.from(crypto.getRandomValues(new Uint8Array(16)))
+    .toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 ```
 
 ## 3. Connect (one-time) — start consent
@@ -257,126 +247,74 @@ confidential web-app flow: the client **secret** authenticates the token exchang
 and `state` covers CSRF — no PKCE (that's for public clients that can't keep a
 secret).
 
-> **Gate this function — and don't skip it just because you have no auth yet.**
-> Anyone who can reach `xero-start` can run a connect and, via the callback,
-> **overwrite your single token row with a different Xero org's tokens**, pointing
-> your whole app at someone else's books. So `xero-start` must never be openly
-> reachable. Pick the gate that fits where you are:
+> ### ⚠️ Lock this behind admin auth before you connect
 >
-> - **You have user auth already** (an admin login): keep `verify_jwt = true`, call
->   `getUser`, check the caller is an admin. That's the version coded below.
-> - **No auth implemented yet** (common for a single-merchant store or early
->   prototype): you can't check a JWT — but do **not** just deploy it public and move
->   on, that's the gap. Use a **shared-secret interim** (snippet after the code):
->   require a secret header only you know, set `verify_jwt = false`, and trigger the
->   one-time connect out-of-band (curl) from your own machine. Don't put the secret
->   in browser code.
-> - **Before you go live, either way:** replace the interim with real admin auth, or
->   — since connecting is one-time — disable or delete `xero-start` once connected,
->   so there's nothing left to abuse.
+> Anyone who can reach the `xeroStart` server function can complete a connect
+> and, via the callback, **overwrite your single token row with a different Xero
+> org's tokens**, pointing your whole app at someone else's books. So before you
+> wire up the button:
 >
-> `xero-callback` stays `verify_jwt = false` regardless (Xero's browser redirect has
-> no JWT); its protection is the `state` row that only a successful `xero-start`
-> could have written — and that only holds if `state` is **expiry-checked and
-> single-use** (deleted after the exchange, so a captured callback URL can't be
-> replayed). The callback code below does both. So what makes a public callback safe
-> is locking down `xero-start` *plus* disciplined `state` handling — not either alone.
+> 1. **Set up Supabase Auth** in your project (Lovable's built-in integration).
+> 2. **Add a `user_roles` table and `has_role()` function** (see the user-roles
+>    convention) so you can mark yourself as `admin`.
+> 3. Gate `xeroStart` with `.middleware([requireSupabaseAuth])` AND a
+>    `has_role(userId, 'admin')` check inside the handler.
+>
+> If your project has no auth yet, **add auth first** — don't ship an ungated
+> connect endpoint. There is no curl/shared-secret workaround in this skill on
+> purpose: non-developers shouldn't have to paste commands into a terminal, and
+> an unguarded `xeroStart` is a full-takeover bug waiting to happen.
 
 ```ts
-// supabase/functions/xero-start/index.ts   (verify_jwt = true)
-import { admin } from "../_shared/admin.ts";
-import { XERO, randomState } from "../_shared/xero.ts";
+// src/lib/xero-start.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { XERO, randomState } from "./xero-config";
 
-Deno.serve(async (req) => {
-  const jwt = req.headers.get("Authorization")?.replace("Bearer ", "");
-  const { data: { user } } = await admin.auth.getUser(jwt!);
-  if (!user /* || !isAdmin(user) */) return new Response("Forbidden", { status: 403 });
+export const xeroStart = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-  const state = randomState();
-  await admin.from("xero_oauth_flows").insert({
-    state, expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    // Admin-only — anyone who can hit this can repoint your books.
+    const { data: isAdmin } = await context.supabase
+      .rpc("has_role", { _user_id: context.userId, _role: "admin" });
+    if (!isAdmin) throw new Error("Forbidden");
+
+    const state = randomState();
+    await supabaseAdmin.from("xero_oauth_flows").insert({
+      state,
+      expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    });
+
+    const url = new URL(XERO.authorize);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", process.env.XERO_CLIENT_ID!);
+    url.searchParams.set("redirect_uri", process.env.XERO_REDIRECT_URI!);
+    url.searchParams.set("scope", process.env.XERO_SCOPES!);
+    url.searchParams.set("state", state);
+    return { url: url.toString() };
   });
-
-  const url = new URL(XERO.authorize);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", XERO.clientId);
-  url.searchParams.set("redirect_uri", XERO.redirectUri);
-  url.searchParams.set("scope", XERO.scopes);
-  url.searchParams.set("state", state);
-
-  return new Response(JSON.stringify({ url: url.toString() }), {
-    headers: { "Content-Type": "application/json" },
-  });
-});
 ```
 
-**Shared-secret interim (when you have no user auth yet).** Set `verify_jwt = false`
-for `xero-start`, add an `XERO_CONNECT_SECRET` Supabase secret, and gate on a header
-instead of a JWT. Two non-negotiables, because `verify_jwt = false` leaves this
-endpoint **publicly reachable** — a leaked header is full compromise (anyone can
-re-point your app at their own books):
+**Lovable preview iframe gotcha.** Lovable's in-editor preview renders your app
+in an iframe, and Xero's login refuses to be framed (`frame-ancestors`), so a
+same-frame redirect shows a **blank white page**. Detect the iframe and open
+consent in a new top-level tab, opening the tab **synchronously in the click
+handler** (before the `await`) so it isn't blocked as a popup:
 
-- **Generate it, don't choose it.** Use a high-entropy value, e.g.
-  `openssl rand -base64 32` — never a hand-picked or guessable string. Treat it like
-  a password: never commit it, never put it in client code, rotate it if exposed.
-- **Compare it timing-safe**, not with `===` on the raw string (a plain compare
-  leaks the secret to a timing attacker one byte at a time).
+```tsx
+import { useServerFn } from "@tanstack/react-start";
+import { xeroStart } from "@/lib/xero-start.functions";
 
-Swap the `getUser()` check at the top of the handler for a constant-time compare —
-hash both sides and compare fixed-length digests, which stays in Web Crypto (no Node
-dependency) and doesn't leak length:
-
-```ts
-// xero-start interim gate — replaces the getUser() check above
-async function safeEqual(a: string, b: string) {
-  const enc = new TextEncoder();
-  const [ha, hb] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  const x = new Uint8Array(ha), y = new Uint8Array(hb);
-  let diff = 0;
-  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];   // constant-time over the digest
-  return diff === 0;
+const start = useServerFn(xeroStart);
+async function onConnect() {
+  const inIframe = window.self !== window.top;
+  const popup = inIframe ? window.open("about:blank", "_blank") : null;
+  const { url } = await start();
+  if (popup) popup.location.href = url;
+  else window.location.href = url;
 }
-const provided = req.headers.get("x-connect-secret") ?? "";
-if (!(await safeEqual(provided, Deno.env.get("XERO_CONNECT_SECRET") ?? ""))) {
-  return new Response("Forbidden", { status: 403 });
-}
-```
-
-**Adopting this interim removes the in-app connect button — the two are mutually
-exclusive.** A secret-gated `xero-start` *cannot* be triggered from the browser
-(that's the whole point: the secret must never ship in client code), so on the
-interim there is **no in-app "Connect Xero" button**. You connect once, by hand,
-from your own machine:
-
-```
-curl -i -H "x-connect-secret: <your-secret>" \
-  https://<project-ref>.supabase.co/functions/v1/xero-start
-```
-It returns the consent URL; open that in a normal browser tab to authorise. The
-popup/iframe button pattern below applies **only** after you've moved to the
-admin-JWT gate. Replace the interim with real admin auth — or delete `xero-start` —
-before launch.
-
-**The button pattern below assumes the admin-JWT gate** (`verify_jwt = true`), so the
-browser carries the signed-in admin's session when it calls `xero-start`. If you're
-on the shared-secret interim, skip this — there is no in-app button; connect with the
-curl above, and come back here once you have real auth.
-
-**Lovable preview iframe gotcha.** Lovable's in-editor preview renders your app in
-an iframe, and Xero's login refuses to be framed (`frame-ancestors`), so a
-same-frame redirect shows a **blank white page**. Detect the iframe and open consent
-in a new top-level tab, opening the tab **synchronously in the click handler**
-(before the `await`) so it isn't blocked as a popup:
-
-```ts
-const inIframe = window.self !== window.top;
-const popup = inIframe ? window.open("about:blank", "_blank") : null;
-const { data } = await supabase.functions.invoke("xero-start");   // carries the admin's session JWT
-if (popup) popup.location.href = data.url;          // iframe (preview): new tab
-else window.location.href = data.url;               // published .lovable.app: same tab
 ```
 
 The published app at `<your-app>.lovable.app` is not iframed, so the same-tab
@@ -384,86 +322,113 @@ redirect works there — handle both.
 
 ## 4. Callback — exchange, store your org
 
-Xero redirects the **browser** here with no Supabase JWT, so this function MUST be
-public: set **`verify_jwt = false`** for `xero-callback` (in `supabase/config.toml`,
-e.g. `[functions.xero-callback]\nverify_jwt = false`). Trust comes from `state`.
+Xero redirects the **browser** here with no app session. The handler lives at a
+server route under `src/routes/api/public/` so it bypasses Lovable's published-site
+auth gate; trust comes from the `state` row written by `xeroStart`.
 
 ```ts
-// supabase/functions/xero-callback/index.ts   (verify_jwt = false)
-import { admin } from "../_shared/admin.ts";
-import { XERO, basicAuth } from "../_shared/xero.ts";
-import { encrypt } from "../_shared/crypto.ts";
+// src/routes/api/public/xero.callback.ts
+import { createFileRoute, redirect } from "@tanstack/react-router";
+import { XERO, basicAuth } from "@/lib/xero-config";
 
-const APP_URL = Deno.env.get("APP_URL")!;   // e.g. https://<your-app>.lovable.app
-const back = (q: string) => new Response(null, { status: 302, headers: { Location: `${APP_URL}/settings/xero${q}` } });
+export const Route = createFileRoute("/api/public/xero/callback")({
+  server: {
+    handlers: {
+      GET: async ({ request }) => {
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+        const { encrypt } = await import("@/lib/server/crypto.server");
 
-Deno.serve(async (req) => {
-  const u = new URL(req.url);
-  const code = u.searchParams.get("code");
-  const state = u.searchParams.get("state");
-  if (!code || !state) return back("?error=missing_params");
+        const APP_URL = process.env.APP_URL!;
+        const back = (q: string) =>
+          new Response(null, { status: 302, headers: { Location: `${APP_URL}/settings/xero${q}` } });
 
-  const { data: flow } = await admin.from("xero_oauth_flows").select("*").eq("state", state).single();
-  if (!flow || new Date(flow.expires_at) < new Date()) return back("?error=bad_state");  // must exist AND be unexpired
+        const u = new URL(request.url);
+        const code = u.searchParams.get("code");
+        const state = u.searchParams.get("state");
+        if (!code || !state) return back("?error=missing_params");
 
-  const tokenRes = await fetch(XERO.token, {
-    method: "POST",
-    headers: { Authorization: `Basic ${basicAuth()}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: XERO.redirectUri }),
-  });
-  if (!tokenRes.ok) return back("?error=token_exchange");
-  const tokenSet = await tokenRes.json();   // { access_token, refresh_token, expires_in, ... }
+        const { data: flow } = await supabaseAdmin
+          .from("xero_oauth_flows").select("*").eq("state", state).single();
+        if (!flow || new Date(flow.expires_at) < new Date()) return back("?error=bad_state");
 
-  // Which org(s) does your login expose? Usually one. If several, either store the
-  // one you mean (filter by name/id) or store all — they share this one token set.
-  const conns = await fetch(XERO.connections, {
-    headers: { Authorization: `Bearer ${tokenSet.access_token}` },
-  }).then((r) => r.json());
+        const tokenRes = await fetch(XERO.token, {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${basicAuth(process.env.XERO_CLIENT_ID!, process.env.XERO_CLIENT_SECRET!)}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: process.env.XERO_REDIRECT_URI!,
+          }),
+        });
+        if (!tokenRes.ok) return back("?error=token_exchange");
+        const tokenSet = await tokenRes.json();
 
-  const enc = await encrypt(JSON.stringify(tokenSet));
-  const expiresAt = new Date(Date.now() + tokenSet.expires_in * 1000).toISOString();
-  for (const c of conns) {
-    await admin.from("xero_connection").upsert(
-      { tenant_id: c.tenantId, tenant_name: c.tenantName, token_set_enc: enc, status: "active", expires_at: expiresAt },
-      { onConflict: "tenant_id" },
-    );
-  }
-  await admin.from("xero_oauth_flows").delete().eq("state", state);  // single-use: consume state so a captured callback can't be replayed
-  return back("?connected=1");
+        const conns = await fetch(XERO.connections, {
+          headers: { Authorization: `Bearer ${tokenSet.access_token}` },
+        }).then((r) => r.json());
+
+        const enc = encrypt(JSON.stringify(tokenSet));
+        const expiresAt = new Date(Date.now() + tokenSet.expires_in * 1000).toISOString();
+        for (const c of conns) {
+          await supabaseAdmin.from("xero_connection").upsert(
+            { tenant_id: c.tenantId, tenant_name: c.tenantName, token_set_enc: enc, status: "active", expires_at: expiresAt },
+            { onConflict: "tenant_id" },
+          );
+        }
+        // single-use: consume state so a captured callback URL can't be replayed
+        await supabaseAdmin.from("xero_oauth_flows").delete().eq("state", state);
+        return back("?connected=1");
+      },
+    },
+  },
 });
 ```
 
 ## 5. Use it per request (refresh + persist rotation)
 
 Load the row, refresh slightly early, and persist the rotated refresh token. With a
-single org this is just a one-row update.
+single org this is just a one-row update. Put this in a `.server.ts` helper, and
+call it from inside server-function handlers.
 
 ```ts
-// supabase/functions/_shared/getToken.ts
-import { admin } from "./admin.ts";
-import { XERO, basicAuth } from "./xero.ts";
-import { encrypt, decrypt } from "./crypto.ts";
+// src/lib/server/xero-token.server.ts
+import { XERO, basicAuth } from "@/lib/xero-config";
+import { encrypt, decrypt } from "./crypto.server";
 
 export async function getAccessToken(tenantId?: string) {
-  const q = admin.from("xero_connection").select("*");
-  const { data: conn } = tenantId ? await q.eq("tenant_id", tenantId).single() : await q.limit(1).single();
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+  const q = supabaseAdmin.from("xero_connection").select("*");
+  const { data: conn } = tenantId
+    ? await q.eq("tenant_id", tenantId).single()
+    : await q.limit(1).single();
   if (!conn) throw new Error("Xero is not connected yet");
 
-  let tokenSet = JSON.parse(await decrypt(conn.token_set_enc));
+  let tokenSet = JSON.parse(decrypt(conn.token_set_enc));
 
-  if (new Date(conn.expires_at) <= new Date(Date.now() + 60_000)) {   // refresh with headroom
+  if (new Date(conn.expires_at) <= new Date(Date.now() + 60_000)) {
     const res = await fetch(XERO.token, {
       method: "POST",
-      headers: { Authorization: `Basic ${basicAuth()}`, "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokenSet.refresh_token }),
+      headers: {
+        Authorization: `Basic ${basicAuth(process.env.XERO_CLIENT_ID!, process.env.XERO_CLIENT_SECRET!)}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: tokenSet.refresh_token,
+      }),
     });
     if (!res.ok) {
-      await admin.from("xero_connection").update({ status: "needs_reconnect" }).eq("tenant_id", conn.tenant_id);
+      await supabaseAdmin.from("xero_connection")
+        .update({ status: "needs_reconnect" }).eq("tenant_id", conn.tenant_id);
       throw new Error("Xero refresh failed — reconnect required");
     }
     tokenSet = await res.json();                          // refresh_token ROTATES — must persist
-    await admin.from("xero_connection").update({
-      token_set_enc: await encrypt(JSON.stringify(tokenSet)),
+    await supabaseAdmin.from("xero_connection").update({
+      token_set_enc: encrypt(JSON.stringify(tokenSet)),
       expires_at: new Date(Date.now() + tokenSet.expires_in * 1000).toISOString(),
       updated_at: new Date().toISOString(),
     }).eq("tenant_id", conn.tenant_id);
@@ -506,30 +471,30 @@ await fetch(`${XERO.api}/Invoices?unitdp=4&summarizeErrors=false`, {
 A real dashboard has to *show* when the connection has dropped. A failed refresh
 flips `status` to `needs_reconnect`, and from then on every Xero call throws until
 you reconnect — don't leave that invisible behind a generic error. Expose a tiny
-**status** endpoint that returns only non-sensitive metadata (never the token) and
-drive a banner from it.
+**status** server function that returns only non-sensitive metadata (never the
+token) and drive a banner from it.
 
 ```ts
-// supabase/functions/xero-status/index.ts   (gate as your app needs)
-import { admin } from "../_shared/admin.ts";
-Deno.serve(async () => {
-  const { data } = await admin.from("xero_connection")
+// src/lib/xero-status.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+
+export const xeroStatus = createServerFn({ method: "GET" }).handler(async () => {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data } = await supabaseAdmin.from("xero_connection")
     .select("tenant_name, status").limit(1).maybeSingle();
-  return new Response(JSON.stringify(
-    data
-      ? { connected: data.status === "active", status: data.status, org: data.tenant_name }
-      : { connected: false, status: "not_connected", org: null },
-  ), { headers: { "Content-Type": "application/json" } });
+  return data
+    ? { connected: data.status === "active", status: data.status, org: data.tenant_name }
+    : { connected: false, status: "not_connected", org: null };
 });
 ```
 
-Frontend: poll it (or refetch on focus) and show a reconnect CTA when needed — the
-CTA runs the very same connect flow as the first-time hookup.
+Frontend: read it (or refetch on focus) and show a reconnect CTA when needed —
+the CTA runs the very same connect flow as the first-time hookup.
 
 ```tsx
 const { data: xero } = useQuery({
   queryKey: ["xero-status"],
-  queryFn: async () => (await supabase.functions.invoke("xero-status")).data,
+  queryFn: useServerFn(xeroStatus),
   refetchOnWindowFocus: true,
 });
 
@@ -539,7 +504,7 @@ if (xero && !xero.connected) {
       {xero.status === "needs_reconnect"
         ? `Xero connection for ${xero.org} has expired — reconnect to keep data flowing.`
         : "Connect your Xero organisation to get started."}
-      <button onClick={startXeroConnect}>
+      <button onClick={onConnect}>
         {xero.status === "needs_reconnect" ? "Reconnect Xero" : "Connect Xero"}
       </button>
     </Banner>
@@ -547,11 +512,11 @@ if (xero && !xero.connected) {
 }
 ```
 
-The endpoint returns the org name and status, so gate it if even that is sensitive
-in your app. And mark `needs_reconnect` *proactively*, not only after a failed
-refresh: a refresh token unused for 60 days dies silently, so a low-traffic dashboard
-can read as "connected" in the table yet be broken. A scheduled keep-alive refresh
-(see gotchas) plus this banner keeps the displayed state honest.
+Gate this endpoint too if even the org name is sensitive in your app. And mark
+`needs_reconnect` *proactively*, not only after a failed refresh: a refresh token
+unused for 60 days dies silently, so a low-traffic dashboard can read as
+"connected" in the table yet be broken. A scheduled keep-alive refresh (see
+gotchas) plus this banner keeps the displayed state honest.
 
 ## Date + money + tax normalisation
 
@@ -623,38 +588,45 @@ Rules that bite:
   `Retry-After` and back off.
 - **`summarizeErrors=false`** on batch creates returns per-item validation errors.
 
-### Lovable / Supabase-specific gotchas
+### Lovable / TanStack Start gotchas
 
-- **`xero-callback` must be `verify_jwt = false`.** Xero's browser redirect carries
-  no Supabase JWT; leave it on and the connect returns 401. Trust comes from `state`.
-- **Redeploy Edge Functions after changing any secret.** They don't hot-reload env;
-  `client_id=undefined` in the authorize URL is the tell. (N/A on non-Edge runtimes.)
-- **`xero-start` must be gated** — admin JWT, or a shared-secret header as a
-  documented interim if you have no auth yet (never leave it openly reachable; §3).
-  Unguarded, it lets anyone overwrite your token row with a different org's books.
-- **The `state` value MUST be persisted.** Edge Functions are stateless — connect
+- **The callback MUST live under `src/routes/api/public/`.** That prefix bypasses
+  Lovable's published-site auth gate; anywhere else, Xero's redirect lands on a
+  login wall and the connect silently fails.
+- **`xeroStart` must be gated by real admin auth** (Supabase Auth +
+  `has_role(userId, 'admin')`). If your project has no auth yet, **add auth first**
+  — don't ship the connect endpoint until it's gated. An unguarded `xeroStart`
+  lets anyone overwrite the single token row with a different org's books.
+- **The `state` value MUST be persisted.** The server runtime is stateless — connect
   and callback are separate invocations with no shared memory.
-- **Web Crypto blob ≠ Node blob.** Web Crypto appends the GCM tag to the ciphertext →
-  two-part `iv.ciphertext`. Don't port a Node three-part `iv.tag.enc` splitter.
-- **Service-role key stays in Edge Functions.** Never expose it (or the token) to the
-  browser. The token table has RLS with no user-facing policies.
-- **`npm:xero-node` may not load** under the edge runtime; the `fetch`-based flow
-  here avoids the dependency. If you use the SDK for read/write calls, test the
-  import first.
+- **Never import `@/integrations/supabase/client.server` at module scope of a
+  `*.functions.ts` or route file.** Top-level code in those files ships to the
+  client bundle (only handler bodies are stripped). Load it inside the handler.
+- **`process.env.*` is server-only and must be read inside the handler**, not at
+  module scope. A module-level read returns `undefined` under the Worker runtime.
+- **Service-role key never goes to the browser.** Surface only derived data
+  (reports, invoices) through your own server functions; the token table has RLS
+  with no anon/authenticated policies and no grants to those roles.
+- **`npm:xero-node`** for read/write API calls is optional and must bundle cleanly
+  for the Worker runtime — the `fetch`-based OAuth flow above avoids the dependency.
 
 ## Security checklist (do not skip)
 
 - **Encrypt** the stored token set at rest; the key (`TOKEN_ENC_KEY`) lives in
-  Supabase secrets, the rotating token in the DB.
-- **Verify `state`** on every callback against the persisted flow row (CSRF).
-- **`xero-callback` is public (`verify_jwt = false`); `xero-start` is gated** — admin
-  JWT, or a shared-secret header as a documented interim when you have no auth yet,
-  and removed or locked to real auth before launch.
-- **RLS on the token table with no user policies** — only the service role touches it.
+  Lovable Cloud secrets, the rotating token in the DB.
+- **Verify `state`** on every callback against the persisted flow row (CSRF), and
+  **delete it after use** so a captured callback URL can't be replayed.
+- **`xeroStart` is admin-gated** via `requireSupabaseAuth` + `has_role`. No auth
+  yet? Add auth before exposing this function — there is no curl/shared-secret
+  fallback in this skill on purpose.
+- **The callback route is the only public endpoint**, and it only acts on a valid,
+  unexpired, single-use `state`.
+- **RLS on the token table with no user policies** — only the service role touches
+  it. No `GRANT` to `anon` or `authenticated`.
 - **Never expose the token or service-role key to the browser** — surface only
-  derived data through your own API.
+  derived data through your own server functions.
 - On a failed refresh, **mark `needs_reconnect` and prompt re-connect** — don't loop.
-- Keep all Xero access in **one place** (`_shared/xero.ts`, `_shared/getToken.ts`).
+- Keep all Xero access in **one place** (`xero-config.ts` + `xero-token.server.ts`).
 
 ## Verify
 
@@ -664,13 +636,11 @@ Rules that bite:
    refresh token is persisted.
 3. Revoke the app in Xero and confirm the app surfaces a reconnect state
    (`needs_reconnect`) instead of looping on failed refreshes.
-4. Hit `xero-callback` directly in a browser and confirm it isn't blocked by 401
-   (i.e. `verify_jwt = false` is set).
-5. Confirm `xero-start` rejects an ungated caller (no admin JWT, or no/incorrect
-   `x-connect-secret` on the interim).
-6. If your app writes to Xero, confirm a `POST` (e.g. create invoice) succeeds rather
-   than returning 403 — proof the token carries write scopes, not just `.read`.
-7. Change a secret, redeploy, and confirm the authorize URL no longer shows
-   `client_id=undefined` (Edge Functions only).
-8. Flip a row to `needs_reconnect` and confirm the banner appears and its CTA re-runs
-   the connect flow.
+4. Hit the callback route directly in a browser and confirm it isn't blocked by a
+   login wall (i.e. it actually lives under `/api/public/`).
+5. Confirm `xeroStart` rejects a non-admin caller (signed-out → 401 from
+   middleware; signed-in non-admin → "Forbidden").
+6. If your app writes to Xero, confirm a `POST` (e.g. create invoice) succeeds
+   rather than returning 403 — proof the token carries write scopes, not just `.read`.
+7. Flip a row to `needs_reconnect` and confirm the banner appears and its CTA
+   re-runs the connect flow.
