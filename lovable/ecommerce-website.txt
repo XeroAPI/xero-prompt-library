@@ -47,6 +47,7 @@ Additional requirements:
 - Persist **every** order to the database. If any Xero sub-call fails, save the order with status `"failed"` plus the full error message.
 - **Xero scopes required:** `openid profile email offline_access accounting.contacts accounting.invoices`. (These are **write** scopes — verify the skill covers write scopes, not read-only defaults.)
 - Invoice status must be `AUTHORISED` (not `DRAFT`) to expose a payment URL.
+- For Xero OAuth, derive the redirect URI from the registered public preview/published host (*.lovable.app), never from the editor iframe origin. Store XERO_REDIRECT_URI as a secret if simpler.
 
 ## Skill Reference
 
