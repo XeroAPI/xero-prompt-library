@@ -1,206 +1,109 @@
-# **Project Brief: "The Executive" \- A Premium E-commerce Website with Xero Integration**
+# Build "The Executive"
 
-## **1\. Project Overview**
+A full-stack luxury single-product e-commerce site selling one beltless trenchcoat at **£2,495 (GBP)**.
 
-The goal is to create a premium, fully responsive, single-product e-commerce website to sell "The Executive," a luxury beltless trenchcoat. The application must feature a robust backend using Supabase, integrated with Xero accounting software. The integration should automatically create customer contacts and invoices in Xero upon a new order and provide the customer with a secure, direct payment URL.
+## Stack & Runtime
 
-## **2\. Product Specifications**
+- Use **TanStack Start** with `createServerFn` for all server-side logic.
+- Do **not** use Supabase Edge Functions. The project already runs TanStack Start, so server functions are the native backend.
+- Use **Supabase** only for Postgres (orders, token storage) and **Lovable Cloud** for deployment.
 
-* **Product Name:** "The Executive" Premium Beltless Trenchcoat  
-* **Price:** $299.99 (No tax applied)  
-* **Available Sizes:** XS, S, M, L, XL, XXL  
-* **Available Colors:** Navy, Charcoal, Camel
+## Auth
 
-## **3\. Technical Architecture**
+- Assume no end-user auth exists yet. Buyers do not log in.
+- The admin dashboard (`/dashboard`) for Xero connection management is protected by a **shared-secret interim** (not a full auth system). The `xero-start` server function requires a `XERO_CONNECT_SECRET` header; the UI connect button is disabled and replaced with a documented one-time `curl` command.
+- **Before go-live, this must be swapped for real admin auth or `xero-start` must be deleted.**
 
-### **Frontend Stack**
+## Design
 
-* **Framework:** React with TypeScript  
-* **Styling:** Tailwind CSS (utilizing semantic design tokens)  
-* **Backend Communication:** Supabase client library
+- Luxury aesthetic, restrained and editorial.
+- **Reference:** Mr Porter product pages — minimal chrome, large typography, generous whitespace, no gradients.
+- **Typography:** Cormorant Garamond for headings, a clean sans-serif for body.
+- **Palette:** deep navy/charcoal backgrounds, warm ivory text, single accent for CTAs. No emojis anywhere.
 
-### **Backend Stack**
+## Product (server-side source of truth)
 
-* **Platform:** Supabase  
-* **Serverless Logic:** Supabase Edge Functions  
-* **Database:** Supabase Postgres for order storage  
-* **Integration:** Xero Custom Connection
+Define the product as a server-side constant:
 
-## **4\. Critical Xero Integration Details**
+- `name`: "The Executive Beltless Trenchcoat"
+- `price`: `2495`
+- `currency`: `GBP`
+- `account code`: `"200"`
+- **Available sizes:** 34, 36, 38, 40, 42, 44
+- **Available colours:** Navy, Camel, Black, Stone
 
-This section outlines the precise requirements for the Xero API integration, which is a critical part of the project.
+**NEVER** take unit price, currency, or account code from the client. The client sends only: `size`, `colour`, `quantity`, `customer name`, `email`.
 
-### **a. API Endpoints & Authentication**
+## Order → Xero Flow (on order submission)
 
-* **Base URL:** All API requests must use the correct Xero API base URL: `https://api.xero.com/api.xro/2.0/`  
-* **Specific Endpoints:** The integration will primarily use these endpoints:  
-  * `/Contacts` (for creating and retrieving contacts)  
-  * `/Invoices` (for creating invoices)  
-  * `/Invoices/{InvoiceID}/OnlineInvoice` (for retrieving the payment URL)  
-* **Authentication Flow:** Use the **Client Credentials OAuth flow**.  
-* **Required Scopes:** Request the following scopes when obtaining the access token: `accounting.transactions accounting.contacts`.  
-* **Tenant ID:** The `Xero-tenant-id` header is required on all API calls. For this single-tenant custom connection, it should be sent with an empty string value.
+Using the Xero API:
 
-### **b. Universal API Request Requirements**
+1. Upsert the contact by email.
+2. Create an **`AUTHORISED` `ACCREC` invoice** (14-day due date, single line item describing the coat with chosen colour + size, quantity, unit amount `2495`, account code `"200"`).
+3. Fetch the online invoice URL and redirect the buyer to it for payment.
 
-* **Headers:** ALL API calls to Xero **must** include the following headers:
+Additional requirements:
 
-```
-{
-  "Authorization": "Bearer ${access_token}",
-  "Content-Type": "application/json",
-  "Accept": "application/json",
-  "Xero-tenant-id": ""
-}
-```
+- Persist **every** order to the database. If any Xero sub-call fails, save the order with status `"failed"` plus the full error message.
+- **Xero scopes required:** `openid profile email offline_access accounting.contacts accounting.invoices`. (These are **write** scopes — verify the skill covers write scopes, not read-only defaults.)
+- Invoice status must be `AUTHORISED` (not `DRAFT`) to expose a payment URL.
 
-*   
-  **CRITICAL:** The `Accept: application/json` header is mandatory. Without it, the Xero API will return XML, causing parsing errors.  
-* **Response Body Handling:** The Xero API response body can only be read once. The correct procedure is to read the response as text using `.text()` and then parse it using `JSON.parse()`. **Never** attempt to call both `.text()` and `.json()` on the same response object.  
-* **Response Data Structure:** Xero's API returns JSON objects with **PascalCase** properties (e.g., `Contacts`, `ContactID`, `Invoices`, `InvoiceID`). This is different from the typical JavaScript **camelCase** convention. Code must handle this correctly.
+## Skill Reference
 
-### **c. Invoice & Contact Creation**
+Follow **Xero Integration Single Account** for connector mechanics, paths, scopes, headers, and date/money normalisation.
 
-* **Tax Type:** When creating invoices, use `taxType: 'NONE'`. Using other values like `'OUTPUT'` may cause validation errors if not configured in the user's Xero account.  
-* **Account Code:** Assign sales to `accountCode: '200'`.  
-* **Invoice Status:** Set the invoice `status: 'AUTHORISED'` to ensure payment URLs can be generated.  
-* **Sample Invoice Payload:** Use a structure similar to the following when creating an invoice:
+Before starting, validate that the skill covers:
 
-```
-{
-  "Type": "ACCREC",
-  "Contact": {
-    "ContactID": "..."
-  },
-  "LineItems": [
-    {
-      "Description": "The Executive - Premium Beltless Trenchcoat (Color: Navy, Size: L)",
-      "Quantity": 1,
-      "UnitAmount": 299.99,
-      "AccountCode": "200"
-    }
-  ],
-  "Status": "AUTHORISED",
-  "LineAmountTypes": "Exclusive",
-  "TaxType": "NONE"
-}
-```
+- Redeploy requirements after adding secrets (not applicable since we are using `createServerFn`, but confirm the skill acknowledges TanStack Start).
+- Write scopes for invoicing (`accounting.invoices`, not just `.read`).
+- Auth gating for `xero-start` with a shared-secret interim for projects without full auth.
+- Reconnect UX (`needs_reconnect` state) and token refresh rotation.
 
-### **d. Online Invoice Payment URL Retrieval**
+## Pages
 
-* **Endpoint:** To get the customer-facing payment URL, use the **GET** method on the following endpoint after the invoice is created: `GET /api.xro/2.0/Invoices/{InvoiceID}/OnlineInvoice`  
-* **Method:** **Do NOT use POST** to create an online invoice; the `GET` request retrieves the URL for the existing `AUTHORISED` invoice.  
-* **Expected Response Format:**
+| Route | Purpose |
+| --- | --- |
+| `/` | Landing (editorial hero, product image, "The Particulars" section) |
+| `/order` | Order form (size/colour/quantity, real-time total, submit → Xero payment URL) |
+| `/orders` | Orders list ("The Ledger") |
+| `/orders/:id` | Order detail with Xero invoice link and error display |
+| `/dashboard` | Admin: Xero connection status, connect/reconnect button (via shared-secret `curl` in preview), revenue stats |
 
-```
-{
-  "OnlineInvoices": [
-    {
-      "OnlineInvoiceUrl": "https://in.xero.com/..."
-    }
-  ]
-}
-```
+## Data Model
 
-*   
-  **Reference:** [Official Xero API Documentation](https://developer.xero.com/documentation/api/accounting/invoices#retrieving-the-online-invoice-url)
+**`orders` table:**
 
-### **e. Error Handling, Validation, & Logging**
+- order ID
+- product details (captured server-side from the constant)
+- customer name/email
+- size
+- colour
+- quantity
+- total
+- xero status
+- xero invoice URL
+- error message
+- timestamps
 
-* **Comprehensive Error Handling:** Each Xero API call must be wrapped in its own `try...catch` block with robust error handling.  
-* **Response Validation:** Before processing a response, validate that it was successful (e.g., `response.ok`) and that the JSON structure is what you expect.  
-* **Array Validation:** Before accessing elements in a response array, always check for the array's existence and type (e.g., `data.Contacts && Array.isArray(data.Contacts)`).  
-* **Detailed Logging:** Implement detailed logging for each step of the Xero integration for debugging purposes. Log the action being performed (e.g., "Creating Xero Contact"), the request data (excluding secrets), and the response status.  
-* **URL Validation:** Always validate that the retrieved payment URL is a valid URL (e.g., starts with `http` or `https`).  
-* **Fallback Scenarios:**  
-  * If online invoices are not enabled in the user's Xero organization, the `OnlineInvoices` array may be empty. Provide a clear, user-friendly fallback message.  
-  * If any external service is unavailable, show appropriate UI states and messages.  
-  * Never return placeholder text like "Manual payment required" as a URL, and never show broken payment buttons.
+**`xero_connection` table:**
 
-## **5\. Step-by-Step Implementation Plan**
+- encrypted token set
+- tenant info
+- status (`active` | `needs_reconnect`)
+- expiry
 
-### **Step 1: Database Setup (Supabase)**
+**Excluded:** No buyer user accounts. No cart. No inventory tracking.
 
-* Create an `orders` table with Row Level Security (RLS) policies enabled.
+## Non-Goals / Out of Scope
 
-```
-CREATE TABLE public.orders (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  order_number TEXT UNIQUE NOT NULL,
-  customer_name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  -- all other customer and product fields (size, color, etc.)
-  xero_contact_id TEXT,
-  xero_invoice_id TEXT,
-  payment_url TEXT,
-  status TEXT DEFAULT 'pending',
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-```
+- No payment gateway beyond Xero (no Stripe, no PayPal).
+- No user authentication for buyers.
+- No cart, no multi-product catalog, no inventory management.
+- No email receipts (Xero handles invoicing).
+- No shipping calculation (price is all-inclusive or shipping is manual).
 
-### **Step 2: Xero Credentials Setup (Supabase)**
+## Error Handling
 
-* Store `XERO_CLIENT_ID` and `XERO_CLIENT_SECRET` as Supabase secrets.  
-* Use `lov-secret-form` to allow the user to input these credentials securely.
-
-### **Step 3: Edge Function Implementation (`/supabase/functions/create-order/index.ts`)**
-
-* **1\. Request Access Token:**
-
-```
-const tokenResponse = await fetch('https://identity.xero.com/connect/token', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'Authorization': `Basic ${btoa(`${clientId}:${clientSecret}`)}`
-  },
-  body: 'grant_type=client_credentials&scope=accounting.transactions accounting.contacts'
-});
-```
-
-*   
-  **2\. Create Contact:** Remember to parse the **PascalCase** response.
-
-```
-// Expected response structure: { Contacts: [{ ContactID: "...", ... }] }
-const contactId = contactData.Contacts[0].ContactID;
-```
-
-*   
-  **3\. Create Invoice:**
-
-```
-// Expected response structure: { Invoices: [{ InvoiceID: "...", ... }] }
-const invoice = invoiceData.Invoices[0];
-```
-
-*   
-  **4\. Retrieve Payment URL:**
-
-```
-// Expected response structure: { OnlineInvoices: [{ OnlineInvoiceUrl: "..." }] }
-const paymentUrl = onlineInvoiceData.OnlineInvoices[0]?.OnlineInvoiceUrl;
-```
-
-### **Step 4: Frontend Integration (React)**
-
-* Create an order form that captures all necessary customer and product details.  
-* On form submission, call the `create-order` edge function.  
-* Handle success and error states from the function call.  
-* On success, display an order confirmation page that includes the secure Xero payment link.
-
-## **6\. Design & UX Requirements**
-
-* **Aesthetic:** Modern, luxurious, and sophisticated. Use a neutral color palette.  
-* **Typography:** Clean and readable fonts (e.g., Inter, Poppins).  
-* **Layout:** Fully responsive design that works flawlessly on desktop, tablet, and mobile.  
-* **Styling:** Use semantic Tailwind tokens defined in `index.css` for consistency.  
-* **User Flow:** A professional and intuitive order flow with clear validation and feedback.
-
-## **7\. Success Criteria**
-
-* The user can successfully complete the entire order-to-payment flow.  
-* A new order correctly creates a corresponding contact and invoice in Xero.  
-* The customer receives a secure, valid Xero-hosted payment URL.  
-* The application handles potential errors gracefully at every step.  
-* All order details are successfully stored and tracked in the Supabase database.
+- **If Xero contact upsert fails:** save order as `"failed"` with error, show buyer a generic "We couldn't finalise your order" message, log details server-side.
+- **If Xero invoice creation fails:** same as above.
+- **If Xero payment URL fetch fails:** order is still saved as `"failed"` because the invoice may exist but be unreachable; admin can manually retrieve the URL.
