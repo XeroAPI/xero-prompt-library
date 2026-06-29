@@ -70,9 +70,14 @@ In the Xero developer portal (developer.xero.com) create a **Web app** OAuth2 ap
 - Grab **Client ID** and **Client Secret**.
 - Register your redirect URI as your **callback server-route URL**, exactly:
   `https://<your-app>.lovable.app/api/public/xero/callback`
-  Register your preview URL too (e.g. `https://<preview-host>.lovable.app/...`) so
-  you can test consent end-to-end before publishing. **Tell the user explicitly
-  what redirect URIs to register for both their deployed and preview environments.**
+  Register **both** redirect URIs in Xero before first connect — the deployed
+  app and the preview host (`https://id-preview--<project-id>.lovable.app/api/public/xero/callback`)
+  — so you can test consent end-to-end before publishing. **Tell the user
+  explicitly what redirect URIs to register for both environments.** The
+  in-editor preview iframe host (`*.lovableproject.com`) is **not** a valid
+  redirect URI — don't register it and don't send it (see the iframe gotcha
+  in §3 for how to derive `redirect_uri` correctly).
+
 - Decide your scopes (see **Scopes** next). You MUST include **`offline_access`**
   or Xero returns no refresh token.
 
@@ -311,6 +316,23 @@ async function onConnect() {
 The published app at `<your-app>.lovable.app` is not iframed, so the same-tab
 redirect works there — handle both. After OAuth, let TanStack Query's
 refetch-on-focus refresh the connection list in the original tab.
+
+**Don't derive `redirect_uri` from `window.location.origin`.** The editor
+renders your app inside an iframe whose origin is `*.lovableproject.com` —
+**not** the registered `id-preview--*.lovable.app` host. Sending the iframe
+origin to Xero produces `invalid redirect_uri` every time, because
+`*.lovableproject.com` is not (and must not be) registered. Two correct
+options, in order of preference:
+
+1. **Read `XERO_REDIRECT_URI` server-side** (preferred). Store one secret per
+   environment and use it in both `xeroStart` and the callback. No
+   client-side guessing, and it matches what's registered in Xero exactly.
+2. **If you must compute it on the client**, map the iframe host back to the
+   public preview host before sending to the server — e.g. detect
+   `*.lovableproject.com` and translate to the matching
+   `id-preview--<project-id>.lovable.app`. Pass that derived origin into
+   `xeroStart`; never pass `window.location.origin` raw.
+
 
 ## 4. Callback — exchange, pick tenant(s), store
 
