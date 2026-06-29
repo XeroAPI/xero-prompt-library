@@ -1,110 +1,37 @@
-# Build "The Executive"
+Build "The Executive" — a luxury single-product storefront selling one
+beltless trenchcoat at £2,495 GBP.
 
-A full-stack luxury single-product e-commerce site selling one beltless trenchcoat at **£2,495 (GBP)**.
+STACK
+- Use the Lovable default stack (TanStack Start + Lovable Cloud).
+- No Edge Functions. All server logic via createServerFn.
+- Lovable Cloud Postgres for orders and Xero token storage.
 
-## Stack & Runtime
+AUTH
+- Buyers never log in.
+- Admin dashboard at /dashboard: leave unauthenticated for v1 with a
+  visible warning banner ("Add admin auth before going live"). Do NOT
+  gate the Xero connect button behind a shared secret or curl command.
 
-- Use **TanStack Start** with `createServerFn` for all server-side logic.
-- Do **not** use Supabase Edge Functions. The project already runs TanStack Start, so server functions are the native backend.
-- Use **Supabase** only for Postgres (orders, token storage) and **Lovable Cloud** for deployment.
+PRODUCT (server-side source of truth, not editable in UI)
+- name: "The Executive Beltless Trenchcoat"
+- price: 2495, currency: GBP, Xero account code: "200"
+- sizes 34–44; colours Navy, Camel, Black, Stone
 
-## Auth
+XERO INTEGRATION (apply the xero-integration-single-account skill)
+- Scopes: offline_access, accounting.contacts, accounting.invoices
+- On order: upsert contact by email → create AUTHORISED ACCREC invoice,
+  14-day due date, single line item → fetch OnlineInvoiceUrl → redirect.
+- Persist every order; on Xero failure store status="failed" with the
+  error message. Never lose an order row.
+- "Connect Xero" is an in-app button on /dashboard (no curl, no secret).
 
-- Assume no end-user auth exists yet. Buyers do not log in.
-- The admin dashboard (`/dashboard`) for Xero connection management is protected by a **shared-secret interim** (not a full auth system). The `xero-start` server function requires a `XERO_CONNECT_SECRET` header; the UI connect button is disabled and replaced with a documented one-time `curl` command.
-- **Before go-live, this must be swapped for real admin auth or `xero-start` must be deleted.**
+PAGES
+- /          editorial hero landing
+- /order     size/colour/qty form
+- /orders    "The Ledger" list
+- /orders/:id detail with invoice link
+- /dashboard connection status + revenue stats + auth warning
 
-## Design
-
-- Luxury aesthetic, restrained and editorial.
-- **Reference:** Mr Porter product pages — minimal chrome, large typography, generous whitespace, no gradients.
-- **Typography:** Cormorant Garamond for headings, a clean sans-serif for body.
-- **Palette:** deep navy/charcoal backgrounds, warm ivory text, single accent for CTAs. No emojis anywhere.
-
-## Product (server-side source of truth)
-
-Define the product as a server-side constant:
-
-- `name`: "The Executive Beltless Trenchcoat"
-- `price`: `2495`
-- `currency`: `GBP`
-- `account code`: `"200"`
-- **Available sizes:** 34, 36, 38, 40, 42, 44
-- **Available colours:** Navy, Camel, Black, Stone
-
-**NEVER** take unit price, currency, or account code from the client. The client sends only: `size`, `colour`, `quantity`, `customer name`, `email`.
-
-## Order → Xero Flow (on order submission)
-
-Using the Xero API:
-
-1. Upsert the contact by email.
-2. Create an **`AUTHORISED` `ACCREC` invoice** (14-day due date, single line item describing the coat with chosen colour + size, quantity, unit amount `2495`, account code `"200"`).
-3. Fetch the online invoice URL and redirect the buyer to it for payment.
-
-Additional requirements:
-
-- Persist **every** order to the database. If any Xero sub-call fails, save the order with status `"failed"` plus the full error message.
-- **Xero scopes required:** `openid profile email offline_access accounting.contacts accounting.invoices`. (These are **write** scopes — verify the skill covers write scopes, not read-only defaults.)
-- Invoice status must be `AUTHORISED` (not `DRAFT`) to expose a payment URL.
-- For Xero OAuth, derive the redirect URI from the registered public preview/published host (*.lovable.app), never from the editor iframe origin. Store XERO_REDIRECT_URI as a secret if simpler.
-
-## Skill Reference
-
-Follow **Xero Integration Single Account** for connector mechanics, paths, scopes, headers, and date/money normalisation.
-
-Before starting, validate that the skill covers:
-
-- Redeploy requirements after adding secrets (not applicable since we are using `createServerFn`, but confirm the skill acknowledges TanStack Start).
-- Write scopes for invoicing (`accounting.invoices`, not just `.read`).
-- Auth gating for `xero-start` with a shared-secret interim for projects without full auth.
-- Reconnect UX (`needs_reconnect` state) and token refresh rotation.
-
-## Pages
-
-| Route | Purpose |
-| --- | --- |
-| `/` | Landing (editorial hero, product image, "The Particulars" section) |
-| `/order` | Order form (size/colour/quantity, real-time total, submit → Xero payment URL) |
-| `/orders` | Orders list ("The Ledger") |
-| `/orders/:id` | Order detail with Xero invoice link and error display |
-| `/dashboard` | Admin: Xero connection status, connect/reconnect button (via shared-secret `curl` in preview), revenue stats |
-
-## Data Model
-
-**`orders` table:**
-
-- order ID
-- product details (captured server-side from the constant)
-- customer name/email
-- size
-- colour
-- quantity
-- total
-- xero status
-- xero invoice URL
-- error message
-- timestamps
-
-**`xero_connection` table:**
-
-- encrypted token set
-- tenant info
-- status (`active` | `needs_reconnect`)
-- expiry
-
-**Excluded:** No buyer user accounts. No cart. No inventory tracking.
-
-## Non-Goals / Out of Scope
-
-- No payment gateway beyond Xero (no Stripe, no PayPal).
-- No user authentication for buyers.
-- No cart, no multi-product catalog, no inventory management.
-- No email receipts (Xero handles invoicing).
-- No shipping calculation (price is all-inclusive or shipping is manual).
-
-## Error Handling
-
-- **If Xero contact upsert fails:** save order as `"failed"` with error, show buyer a generic "We couldn't finalise your order" message, log details server-side.
-- **If Xero invoice creation fails:** same as above.
-- **If Xero payment URL fetch fails:** order is still saved as `"failed"` because the invoice may exist but be unreachable; admin can manually retrieve the URL.
+DESIGN
+- Reference: Mr Porter. Cormorant Garamond headings, clean sans body.
+- Deep navy/charcoal bg, warm ivory text, single muted gold accent.
