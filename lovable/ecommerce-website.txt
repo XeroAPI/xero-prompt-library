@@ -18,7 +18,7 @@ PRODUCT (server-side source of truth, not editable in UI)
 - sizes 34–44; colours Navy, Camel, Black, Stone
 
 XERO INTEGRATION (apply the xero-integration-single-account skill)
-- Scopes: offline_access, accounting.contacts, accounting.invoices
+- Scopes: offline_access, openid, profile, email, accounting.contacts, accounting.invoices
 - On order: upsert contact by email → create AUTHORISED ACCREC invoice,
   14-day due date, single line item → fetch OnlineInvoiceUrl → redirect.
 - Persist every order; on Xero failure store status="failed" with the
