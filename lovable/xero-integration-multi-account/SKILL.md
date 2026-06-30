@@ -1,6 +1,6 @@
 ---
 name: xero-integration-multi-account
-description: Use when building a MULTI-TENANT Xero integration in Lovable where each end user connects THEIR OWN Xero organisation, and the app reads/writes Xero as that user with their own access + refresh tokens. Covers the full OAuth2 lifecycle in TanStack Start server functions, per-user encrypted token storage with RLS, refresh/rotation, tenant selection, scopes, and Xero API gotchas (granular scope migration, date/money/tax normalisation, idempotent writes, rate limits). Not for single-org apps where you (the builder) connect one Xero you own — that needs only one stored token set, not per-user keying.
+description: Multi-tenant Xero on Lovable Cloud (TanStack Start + Lovable Cloud Postgres) — each customer connects their own Xero organisation and the app acts as that customer. Covers OAuth 2 (authorize → callback → refresh) with rotating refresh tokens, per-user encrypted token storage, scope selection (granular > broad), idempotent writes, sibling-row refresh, reconnect UX, and the Lovable-specific traps around iframe preview, host mapping, and redirect URIs.
 ---
 
 # Multi-account / multi-tenant Xero (each user connects their own Xero)
@@ -28,11 +28,13 @@ customer**, with **their** tokens.
 ## Where this code runs in Lovable
 
 Lovable's current default stack is **TanStack Start** on a Cloudflare Workers-style
-serverless runtime, with **Supabase** for Postgres and **Lovable Cloud** for
-deployment and secrets. App-internal server logic — including all Xero OAuth and
-token handling — lives in **`createServerFn` server functions**; external callers
-(Xero's browser redirect, webhooks, cron) hit **server routes** under
-`src/routes/api/public/*`. **Do not use Supabase Edge Functions** for any of this.
+serverless runtime, with **Lovable Cloud** for Postgres, auth, secrets, and deployment.
+Lovable Cloud runs on Supabase under the hood, so the auto-generated env variables and
+imports still say `supabase` (e.g. `@/integrations/supabase/client.server`). App-internal
+server logic — including all Xero OAuth and token handling — lives in **`createServerFn`
+server functions**; external callers (Xero's browser redirect, webhooks, cron) hit
+**server routes** under `src/routes/api/public/*`. **Do not use Supabase Edge Functions**
+for any of this.
 
 Two runtime facts shape the code below:
 
@@ -46,48 +48,104 @@ Two runtime facts shape the code below:
 the three-part `iv.tag.enc` ciphertext shape below is correct on this stack.
 
 > **If you're working in a legacy Lovable project that still uses Supabase Edge
-> Functions (Deno) as its server layer**, port these handlers to Edge Functions:
+> Functions (Deno) directly as its server layer**, port these handlers to Edge Functions:
 > start/callback/getToken become Edge Functions, secrets are read via
 > `Deno.env.get` (and you must redeploy after changing one), the publicly-reachable
 > callback needs `verify_jwt = false`, and crypto becomes Web Crypto with a
-> two-part `iv.ciphertext` blob (Web Crypto appends the GCM tag to the ciphertext).
-> Everything else — SQL, scopes, idempotency, Xero gotchas — carries over
-> unchanged.
+> two-part `iv.ciphertext` blob. Everything else carries over unchanged.
 
 ## Decision check before building
 
 Build the multi-tenant version only if ALL are true:
 - Each customer connects their **own** Xero org (not yours).
 - The app acts under **each customer's** Xero identity, not a shared one.
-- You can securely store and rotate per-user refresh tokens (Supabase + RLS, below).
+- You can securely store and rotate per-user refresh tokens (Lovable Cloud Postgres + RLS, below).
 
 If any is false, use `xero-integration-single-account` (one stored token set).
+
+---
+
+## ⚠️ Pre-flight — do this FIRST (skipping it costs hours)
+
+Three checks. Each one prevents a class of bug that produces a misleading
+upstream error from Xero. Do them **before** you wire the Connect button to a
+human.
+
+### 1. Assert every secret is set and non-empty
+
+Empty/missing secrets surface as `unauthorized_client` from Xero (because
+`client_id=undefined` got sent), which points away from the real cause. Fail fast
+with a clear message inside `xeroStart` **before** building the URL:
+
+```ts
+function requireEnv(name: string) {
+  const v = process.env[name];
+  if (!v || v.trim() === "") {
+    throw new Error(`${name} is empty — set it in Project Secrets and retry.`);
+  }
+  return v;
+}
+```
+
+Call `requireEnv("XERO_CLIENT_ID")`, `XERO_CLIENT_SECRET`, `XERO_SCOPES`, and
+`TOKEN_ENC_KEY` at the top of every handler that uses them.
+
+### 2. Log the constructed authorize URL once
+
+You want a server log you can read when something is wrong, without ever
+printing the secret value itself:
+
+```ts
+console.log("[xero] authorize", {
+  user_id: context.userId,
+  client_id_len: process.env.XERO_CLIENT_ID?.length,
+  redirect_uri: redirectUri,
+  scope: process.env.XERO_SCOPES,
+});
+```
+
+If the next failure is `unauthorized_client` or `invalid redirect_uri`, this
+line tells you *exactly* which value Xero rejected.
+
+### 3. Smoke-test `xeroStart` BEFORE clicking Connect
+
+Sign in as a test user, call the server function, and inspect the returned URL:
+`client_id` must be a non-empty hex string, and `redirect_uri` must **exactly**
+match one of the URIs registered in your Xero app (including scheme, host, and
+path). If either is wrong, fix it here. Do not proceed to the popup — Xero's
+errors past this point are far less useful than the URL you can read right now.
+
+---
 
 ## 1. Register your own Xero app
 
 In the Xero developer portal (developer.xero.com) create a **Web app** OAuth2 app
 (confidential — it holds a secret, which your server functions can):
+
 - Grab **Client ID** and **Client Secret**.
-- Register your redirect URI as your **callback server-route URL**, exactly:
-  `https://<your-app>.lovable.app/api/public/xero/callback`
-  Register **both** redirect URIs in Xero before first connect — the deployed
-  app and the preview host (`https://id-preview--<project-id>.lovable.app/api/public/xero/callback`)
-  — so you can test consent end-to-end before publishing. **Tell the user
-  explicitly what redirect URIs to register for both environments.** The
-  in-editor preview iframe host (`*.lovableproject.com`) is **not** a valid
-  redirect URI — don't register it and don't send it (see the iframe gotcha
-  in §3 for how to derive `redirect_uri` correctly).
+- **Register BOTH redirect URIs**, exactly:
+  - **Published:** `https://project--<project-id>.lovable.app/api/public/xero/callback`
+  - **Preview:** `https://id-preview--<project-id>.lovable.app/api/public/xero/callback`
+
+  Tell the user to register both before first connect. The in-editor preview
+  iframe host (`*.lovableproject.com`) and the dev-server origin (`localhost:8080`)
+  are **NOT** valid redirect URIs — don't register them and don't send them.
+  See the resolver in §3.
 
 - Decide your scopes (see **Scopes** next). You MUST include **`offline_access`**
   or Xero returns no refresh token.
 
-Store **your app's** Client ID/Secret as Lovable Cloud secrets (`XERO_CLIENT_ID`,
-`XERO_CLIENT_SECRET`, `XERO_REDIRECT_URI`, `XERO_SCOPES`), plus a base64-encoded
-32-byte **`TOKEN_ENC_KEY`** for encrypting stored tokens. `SUPABASE_URL` and
-`SUPABASE_SERVICE_ROLE_KEY` are already available to server functions via
-`process.env`. **Never** put per-user tokens in secrets — they go in the database,
-encrypted. The refresh token **rotates on every refresh**, so it must live in a
-**mutable** store (the database).
+Store in Lovable Cloud secrets:
+- `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`
+- `XERO_SCOPES` (space-separated string)
+- `TOKEN_ENC_KEY` (base64-encoded 32 bytes — use `generate_secret`)
+
+You do **not** need a `XERO_REDIRECT_URI` secret — the resolver in §3 derives it
+from the request origin so preview and published both work without juggling
+environment-specific secrets. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are
+already available via `process.env`. **Never** put per-user tokens in secrets —
+they go in the database, encrypted. The refresh token **rotates on every
+refresh**, so it must live in a **mutable** store (the database).
 
 > Read `process.env.*` **inside** `.handler()`, not at module scope. The Worker
 > runtime injects env per-request; a module-level read returns `undefined`.
@@ -251,7 +309,58 @@ export const randomState = () =>
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 ```
 
-## 3. Start consent (server function, knows the user)
+---
+
+## 3. The redirect-URI resolver — read carefully
+
+> ### ⚠️ Three traps, all of which produce `invalid redirect_uri` or `unauthorized_client`
+>
+> **Trap A — `getRequest()` / `request.url` on the server returns
+> `http://localhost:8080`.** Under the Worker runtime the inbound request you
+> see inside a server function is on the internal dev host, not the public URL.
+> Never derive `redirect_uri` from it inside `xeroStart`.
+>
+> **Trap B — In the Lovable editor, `window.location.origin` is
+> `https://<project-id>.lovableproject.com`** (the iframe host), which is NOT
+> a registered URI. Sending it raw produces `invalid redirect_uri` every time.
+>
+> **Trap C — A single `XERO_REDIRECT_URI` secret can't cover both preview and
+> published.** If you set it to the published host the preview breaks (and
+> vice-versa). Use the resolver below instead.
+
+Pass the client origin into `xeroStart`, then **map** unregistered hosts to the
+matching registered URI:
+
+```ts
+// src/lib/xero-redirect.ts
+const PROJECT_ID = "<your-project-id>";
+const PREVIEW   = `https://id-preview--${PROJECT_ID}.lovable.app`;
+const PUBLISHED = `https://project--${PROJECT_ID}.lovable.app`;
+const CALLBACK  = "/api/public/xero/callback";
+
+export function resolveRedirectUri(clientOrigin: string | undefined): string {
+  const origin = (clientOrigin ?? "").trim();
+  if (!origin) return `${PREVIEW}${CALLBACK}`;
+  let host: string;
+  try { host = new URL(origin).hostname; } catch { return `${PREVIEW}${CALLBACK}`; }
+  // Editor iframe host — not registered with Xero.
+  if (host.endsWith(".lovableproject.com")) return `${PREVIEW}${CALLBACK}`;
+  // Local dev — not registered with Xero.
+  if (host === "localhost" || host === "127.0.0.1") return `${PREVIEW}${CALLBACK}`;
+  // Registered hosts pass through unchanged.
+  if (origin.startsWith(PUBLISHED)) return `${PUBLISHED}${CALLBACK}`;
+  if (origin.startsWith(PREVIEW))   return `${PREVIEW}${CALLBACK}`;
+  // Custom domain or anything else → default to preview. Add an explicit
+  // branch here if you ship a custom domain.
+  return `${PREVIEW}${CALLBACK}`;
+}
+```
+
+Use the same resolver in **both** `xeroStart` (with the client-supplied origin)
+and the callback route (with `new URL(request.url).origin` — which DOES work
+correctly inside a server route because it's the actual public URL Xero hit).
+
+### `xeroStart` (consent kickoff)
 
 `state` is your CSRF defense and your link back to the initiating user. Persist
 it server-side (the `xero_oauth_flows` row) — never trust it blind on return.
@@ -263,11 +372,24 @@ is what scopes every stored token row to the right customer.
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { XERO, randomState } from "./xero-config";
+import { resolveRedirectUri } from "./xero-redirect";
 
 export const xeroStart = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .handler(async ({ context }) => {
+  .inputValidator((d: { origin?: string } | undefined) => ({ origin: d?.origin ?? "" }))
+  .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    // Pre-flight: fail fast with a useful message.
+    const clientId = process.env.XERO_CLIENT_ID;
+    const scopes   = process.env.XERO_SCOPES;
+    if (!clientId) throw new Error("XERO_CLIENT_ID is empty — set it in Project Secrets.");
+    if (!scopes)   throw new Error("XERO_SCOPES is empty — set it in Project Secrets.");
+
+    const redirectUri = resolveRedirectUri(data.origin);
+    console.log("[xero] authorize", {
+      user_id: context.userId, client_id_len: clientId.length, redirectUri, scopes,
+    });
 
     const state = randomState();
     await supabaseAdmin.from("xero_oauth_flows").insert({
@@ -278,9 +400,9 @@ export const xeroStart = createServerFn({ method: "POST" })
 
     const url = new URL(XERO.authorize);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("client_id", process.env.XERO_CLIENT_ID!);
-    url.searchParams.set("redirect_uri", process.env.XERO_REDIRECT_URI!);
-    url.searchParams.set("scope", process.env.XERO_SCOPES!);
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", scopes);
     url.searchParams.set("state", state);
     return { url: url.toString() };
   });
@@ -293,11 +415,16 @@ export const xeroStart = createServerFn({ method: "POST" })
 > adds a `code_verifier` you'd have to persist across the two stateless
 > invocations for no security gain. Don't use PKCE for this — secret + `state`.
 
-**Lovable preview iframe gotcha.** Lovable's in-editor preview renders your app in
-an iframe, and Xero's login page refuses to be framed (`frame-ancestors`), so a
-same-frame redirect shows a **blank white page**. Detect the iframe and open
-consent in a new top-level tab, opening the tab **synchronously in the click
-handler** (before the `await`) so it isn't blocked as a popup:
+### Click handler — iframe rule
+
+> ### ⚠️ Open consent in a NEW TAB, opened SYNCHRONOUSLY in the click handler
+>
+> Xero's login refuses to be framed (`frame-ancestors`), so a same-frame
+> redirect from the Lovable preview iframe shows a **blank white page** that
+> looks like the button is broken. Detect the iframe and open a top-level tab.
+> The `window.open()` call MUST happen *before* any `await`, or popup blockers
+> will eat it. Always pass `window.location.origin` into `xeroStart` so the
+> resolver maps it correctly.
 
 ```tsx
 import { useServerFn } from "@tanstack/react-start";
@@ -306,8 +433,8 @@ import { xeroStart } from "@/lib/xero-start.functions";
 const start = useServerFn(xeroStart);
 async function onConnect() {
   const inIframe = window.self !== window.top;
-  const popup = inIframe ? window.open("about:blank", "_blank") : null;
-  const { url } = await start();
+  const popup = inIframe ? window.open("about:blank", "_blank") : null;  // sync!
+  const { url } = await start({ data: { origin: window.location.origin } });
   if (popup) popup.location.href = url;
   else window.location.href = url;
 }
@@ -317,34 +444,20 @@ The published app at `<your-app>.lovable.app` is not iframed, so the same-tab
 redirect works there — handle both. After OAuth, let TanStack Query's
 refetch-on-focus refresh the connection list in the original tab.
 
-**Don't derive `redirect_uri` from `window.location.origin`.** The editor
-renders your app inside an iframe whose origin is `*.lovableproject.com` —
-**not** the registered `id-preview--*.lovable.app` host. Sending the iframe
-origin to Xero produces `invalid redirect_uri` every time, because
-`*.lovableproject.com` is not (and must not be) registered. Two correct
-options, in order of preference:
-
-1. **Read `XERO_REDIRECT_URI` server-side** (preferred). Store one secret per
-   environment and use it in both `xeroStart` and the callback. No
-   client-side guessing, and it matches what's registered in Xero exactly.
-2. **If you must compute it on the client**, map the iframe host back to the
-   public preview host before sending to the server — e.g. detect
-   `*.lovableproject.com` and translate to the matching
-   `id-preview--<project-id>.lovable.app`. Pass that derived origin into
-   `xeroStart`; never pass `window.location.origin` raw.
-
-
 ## 4. Callback — exchange, pick tenant(s), store
 
 Xero redirects the **browser** here with no app session. The handler lives at a
 server route under `src/routes/api/public/` so it bypasses Lovable's published-site
 auth gate; trust comes from the `state` row written by `xeroStart`, which carries
-the originating `user_id`.
+the originating `user_id`. Use the **same** `resolveRedirectUri` helper as in
+`xeroStart` — the token-exchange `redirect_uri` MUST byte-match the one used to
+start the flow.
 
 ```ts
 // src/routes/api/public/xero.callback.ts
 import { createFileRoute } from "@tanstack/react-router";
 import { XERO, basicAuth } from "@/lib/xero-config";
+import { resolveRedirectUri } from "@/lib/xero-redirect";
 
 export const Route = createFileRoute("/api/public/xero/callback")({
   server: {
@@ -353,18 +466,20 @@ export const Route = createFileRoute("/api/public/xero/callback")({
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const { encrypt } = await import("@/lib/server/crypto.server");
 
-        const APP_URL = process.env.APP_URL!;
-        const back = (q: string) =>
-          new Response(null, { status: 302, headers: { Location: `${APP_URL}/xero${q}` } });
-
         const u = new URL(request.url);
+        const origin = u.origin;            // safe here — this IS the public URL Xero hit
+        const redirectUri = resolveRedirectUri(origin);
+        const back = (q: string) =>
+          new Response(null, { status: 302, headers: { Location: `${origin}/xero${q}` } });
+
         const code = u.searchParams.get("code");
         const state = u.searchParams.get("state");
         if (!code || !state) return back("?error=missing_params");
 
         const { data: flow } = await supabaseAdmin
-          .from("xero_oauth_flows").select("*").eq("state", state).single();
-        if (!flow || new Date(flow.expires_at) < new Date()) return back("?error=bad_state");
+          .from("xero_oauth_flows").select("*").eq("state", state).maybeSingle();
+        if (!flow || new Date(flow.expires_at as string) < new Date())
+          return back("?error=bad_state");
 
         // confidential flow: Basic auth with the secret
         const tokenRes = await fetch(XERO.token, {
@@ -376,16 +491,19 @@ export const Route = createFileRoute("/api/public/xero/callback")({
           body: new URLSearchParams({
             grant_type: "authorization_code",
             code,
-            redirect_uri: process.env.XERO_REDIRECT_URI!,
+            redirect_uri: redirectUri,
           }),
         });
-        if (!tokenRes.ok) return back("?error=token_exchange");
+        if (!tokenRes.ok) {
+          console.error("[xero] token exchange failed", await tokenRes.text());
+          return back("?error=token_exchange");
+        }
         const tokenSet = await tokenRes.json();
 
         // which orgs did this single consent authorize?
         const conns = await fetch(XERO.connections, {
           headers: { Authorization: `Bearer ${tokenSet.access_token}` },
-        }).then((r) => r.json());
+        }).then((r) => r.json()) as Array<{ tenantId: string; tenantName: string }>;
 
         // A single consent can authorize MULTIPLE orgs that all SHARE ONE token set.
         // Don't assume conns[0]. Encrypt ONCE and write the IDENTICAL ciphertext to every
@@ -548,8 +666,8 @@ banner keeps the displayed state honest.
   ```
 
 - **Money.** Send numbers, not formatted currency strings. Control rounding with
-  the `unitdp` query param (up to 4). Postgres `numeric` comes back as strings via
-  Supabase — convert to numbers before any client-side parse. `AmountDue` is a
+  the `unitdp` query param (up to 4). Postgres `numeric` comes back as strings via the
+  Supabase client — convert to numbers before any client-side parse. `AmountDue` is a
   number.
 
 - **Tax is the org's, not yours.** Each connected organisation applies **its own**
@@ -618,7 +736,9 @@ one that silently succeeded.
   login wall and the connect silently fails.
 - **`xeroStart` must be gated by `requireSupabaseAuth`.** It's the middleware that
   binds the OAuth flow to the calling user; an unauthenticated `xeroStart` would
-  store tokens against no one (or worse, the wrong customer).
+  store tokens against no one (or worse, the wrong customer). Unlike the
+  single-account skill, there is **no prototype escape hatch** here — without a
+  user id the flow is broken by construction.
 - **The `state` value MUST be persisted.** The server runtime is stateless —
   start and callback are separate invocations with no shared memory.
 - **Never import `@/integrations/supabase/client.server` at module scope of a
@@ -626,6 +746,13 @@ one that silently succeeded.
   client bundle (only handler bodies are stripped). Load it inside the handler.
 - **`process.env.*` is server-only and must be read inside the handler**, not at
   module scope. A module-level read returns `undefined` under the Worker runtime.
+- **`getRequest()` / `request.url` inside a server function returns
+  `http://localhost:8080`** under the Worker runtime — useless for `redirect_uri`.
+  Pass `window.location.origin` from the client into `xeroStart` and run it
+  through `resolveRedirectUri`. (It IS safe to read `new URL(request.url).origin`
+  inside the `/api/public/xero/callback` server route — that's a real public URL.)
+- **`window.location.origin` in the editor is `*.lovableproject.com`** — also
+  not registered. Always run it through `resolveRedirectUri`.
 - **Service-role key never goes to the browser.** Surface only derived data
   (connection metadata, invoices) through your own server functions; the token
   tables have RLS with no anon/authenticated policies and no grants to those roles.
@@ -647,8 +774,8 @@ one that silently succeeded.
   client-readable storage.
 - On a failed refresh, **mark the connection `needs_reconnect` and prompt
   re-connect** — don't silently retry forever.
-- Keep all Xero access in **one place** (`xero-config.ts` + `xero-token.server.ts`)
-  so paths, tenant handling, and gotchas live together.
+- Keep all Xero access in **one place** (`xero-config.ts` + `xero-token.server.ts`
+  + `xero-redirect.ts`) so paths, tenant handling, and gotchas live together.
 
 ## Don't want to hand-roll it?
 
@@ -659,6 +786,9 @@ pragmatic choice.
 
 ## Verify
 
+0. **Smoke-test before clicking Connect.** Sign in as a test user, call
+   `xeroStart`, and inspect the returned URL — `client_id` non-empty, `redirect_uri`
+   exactly matches a URI registered in your Xero app. Fix before touching the popup.
 1. Two app users each connect a **different** Xero org; confirm two distinct token
    rows and that each user's writes land in their own org (check `Xero-Tenant-Id`).
 2. Force a near-expiry token and confirm transparent refresh **and** that the
