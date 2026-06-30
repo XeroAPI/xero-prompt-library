@@ -88,7 +88,37 @@ registered in your Xero app (including scheme, host, and path). If either is
 wrong, fix it here. Do not proceed to the popup — Xero's errors past this point
 are far less useful than the URL you can read right now.
 
+### 4. Validate `TOKEN_ENC_KEY` decodes to exactly 32 bytes
+
+AES-256-GCM requires a **32-byte** key. A 32-character random string is NOT 32
+bytes once base64-decoded (it's ~24), and `createCipheriv` throws
+`Invalid key length` from deep inside `encrypt()` — which surfaces as an
+opaque **500 on the callback**, *after* Xero has already consumed the
+single-use `code`. The user sees "something went wrong" with no way to retry
+without re-consenting, and no breadcrumb in the logs points at the key.
+
+Make `key()` self-validating and tolerant of either shape:
+
+```ts
+// src/lib/server/crypto.server.ts
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+function key() {
+  const k = process.env.TOKEN_ENC_KEY;
+  if (!k) throw new Error("TOKEN_ENC_KEY is not set");
+  const decoded = Buffer.from(k, "base64");
+  if (decoded.length === 32) return decoded;                         // preferred shape
+  if (k.length >= 32) return createHash("sha256").update(k, "utf8").digest();  // tolerant shim
+  throw new Error("TOKEN_ENC_KEY too short — must be base64(32 bytes) or ≥32 chars");
+}
+```
+
+The SHA-256 branch is a one-way compatibility shim so a mis-generated secret
+doesn't crash the app; do not rely on it as the *intended* path. Generation
+guidance is in §1.
+
 ---
+
+
 
 ## 1. Register your own Xero app
 
@@ -111,7 +141,10 @@ In the Xero developer portal (developer.xero.com) create a **Web app** OAuth2 ap
 Store in Lovable Cloud secrets:
 - `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`
 - `XERO_SCOPES` (space-separated string)
-- `TOKEN_ENC_KEY` (base64-encoded 32 bytes — use `generate_secret`)
+- `TOKEN_ENC_KEY` — must base64-decode to exactly **32 bytes**. Call
+  `generate_secret` with **`length: 44`** (the base64 length of 32 random
+  bytes). The default 32-char length is the common mistake — it decodes to
+  ~24 bytes and AES-256-GCM rejects it at runtime (see Pre-flight §4).
 
 You do **not** need a `XERO_REDIRECT_URI` secret — the resolver in §3 derives it
 from the request origin. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are
@@ -215,8 +248,15 @@ AES-256-GCM helpers (Node `crypto`, three-part `iv.tag.ct` base64):
 
 ```ts
 // src/lib/server/crypto.server.ts
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-function key() { return Buffer.from(process.env.TOKEN_ENC_KEY!, "base64"); }
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+function key() {
+  const k = process.env.TOKEN_ENC_KEY;
+  if (!k) throw new Error("TOKEN_ENC_KEY is not set");
+  const decoded = Buffer.from(k, "base64");
+  if (decoded.length === 32) return decoded;
+  if (k.length >= 32) return createHash("sha256").update(k, "utf8").digest();  // tolerant shim
+  throw new Error("TOKEN_ENC_KEY too short — must be base64(32 bytes) or ≥32 chars");
+}
 export function encrypt(plain: string) {
   const iv = randomBytes(12);
   const c = createCipheriv("aes-256-gcm", key(), iv);
@@ -402,14 +442,15 @@ export const Route = createFileRoute("/api/public/xero/callback")({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const u = new URL(request.url);
+        const origin = u.origin;  // safe here — this IS the public URL Xero hit
+        const back = (q: string) =>
+          new Response(null, { status: 302, headers: { Location: `${origin}/dashboard${q}` } });
+        try {
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         const { encrypt } = await import("@/lib/server/crypto.server");
 
-        const u = new URL(request.url);
-        const origin = u.origin;  // safe here — this IS the public URL Xero hit
         const redirectUri = resolveRedirectUri(origin);
-        const back = (q: string) =>
-          new Response(null, { status: 302, headers: { Location: `${origin}/dashboard${q}` } });
 
         const code = u.searchParams.get("code");
         const state = u.searchParams.get("state");
@@ -449,6 +490,14 @@ export const Route = createFileRoute("/api/public/xero/callback")({
         }
         await supabaseAdmin.from("xero_oauth_flows").delete().eq("state", state);
         return back("?connected=1");
+        } catch (e) {
+          // Any throw past token_exchange MUST funnel into the same ?error/&detail
+          // redirect — a bare 500 is unrecoverable here because Xero's `code` is
+          // single-use and the user has to re-consent before you can read the next log.
+          console.error("[xero] callback error", e);
+          const detail = encodeURIComponent(e instanceof Error ? e.message : String(e));
+          return back(`?error=callback&detail=${detail}`);
+        }
       },
     },
   },
@@ -535,6 +584,13 @@ Drive a banner from it; refetch on focus. `needs_reconnect` should surface
 immediately with a CTA that re-runs the connect flow. Refresh tokens unused for
 60 days die silently, so on a low-traffic dashboard add a scheduled keep-alive
 refresh, not just reactive detection.
+
+Also read `?error=…&detail=…` from the URL on `/dashboard` and render it in
+the connection banner. The callback (§4) redirects every failure with those
+params; without surfacing them, a callback crash looks identical to "not
+connected yet" and the user has no idea anything happened.
+
+
 
 ## Date + money + tax normalisation
 
@@ -632,6 +688,12 @@ Rules that bite:
 0. **Smoke-test before clicking Connect.** Call `xeroStart` and inspect the
    returned URL — `client_id` non-empty, `redirect_uri` exactly matches a URI
    registered in your Xero app. Fix before touching the popup.
+0.5. **Force an encryption failure once.** Temporarily set `TOKEN_ENC_KEY` to
+   a 16-char string and click Connect. Confirm `/dashboard` shows
+   `?error=callback&detail=…` (with a readable message) rather than a blank
+   500 — this proves both the callback try/catch (§4) and the dashboard
+   banner (§6) actually wire failures back to the user. Restore the real
+   key afterwards.
 1. Connect your org; confirm one `xero_connection` row and a real read works.
 2. Force a near-expiry token; confirm transparent refresh **and** rotated
    refresh token persisted.
