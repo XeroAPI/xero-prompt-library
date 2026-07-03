@@ -136,7 +136,8 @@ In the Xero developer portal (developer.xero.com) create a **Web app** OAuth2 ap
   See the resolver in §3.
 
 - Decide your scopes (see **Scopes** next). You MUST include **`offline_access`**
-  or Xero returns no refresh token.
+  or Xero returns no refresh token. Do not ask the user what scopes to use - set
+  the appropriate scopes for the integration to function.
 
 Store in Lovable Cloud secrets:
 - `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`
