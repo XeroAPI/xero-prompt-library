@@ -1,0 +1,41 @@
+Build "[APP_NAME]" — [ONE_LINE_DESCRIPTION].
+
+STACK
+- Use the Lovable default stack (TanStack Start + Lovable Cloud).
+- No Edge Functions. All server logic via createServerFn.
+- Lovable Cloud Postgres for app data and Xero token storage.
+
+AUTH
+[INSERT AUTH REQUIREMENTS HERE. Example: "Buyers never log in. Admin dashboard
+at /dashboard: leave unauthenticated for v1 with a visible warning banner
+('Add admin auth before going live'). Do NOT gate the Xero connect button
+behind a shared secret or curl command."]
+
+CORE FUNCTIONALITY
+[INSERT YOUR SPECIFIC APP FEATURES HERE. Example: "Single-product storefront
+with server-side product config (name, price, currency, Xero account code,
+variants). Never take price or account code from the client."]
+
+XERO INTEGRATION (apply the xero-integration-single-account skill, or
+xero-integration-multi-account if each user connects their own Xero)
+- Scopes: [INSERT REQUIRED GRANULAR SCOPES — must include offline_access.
+  See https://developer.xero.com/documentation/guides/oauth2/scopes]
+- [INSERT XERO DATA FLOW HERE. Example: "On order: upsert contact by email →
+  create AUTHORISED ACCREC invoice, 14-day due date, single line item → fetch
+  OnlineInvoiceUrl → redirect."]
+- Persist every [RECORD_TYPE e.g. order]; on Xero failure store status="failed"
+  with the error message. Never lose a row.
+- "Connect Xero" is an in-app button on /dashboard (no curl, no secret).
+
+PAGES
+[INSERT YOUR PAGES AND ROUTES HERE. Example:
+- /          editorial hero landing
+- /order     size/colour/qty form
+- /orders    "The Ledger" list
+- /orders/:id detail with invoice link
+- /dashboard connection status + revenue stats + auth warning]
+
+DESIGN
+[INSERT YOUR DESIGN REQUIREMENTS HERE. Example:
+- Reference: Mr Porter. Cormorant Garamond headings, clean sans body.
+- Deep navy/charcoal bg, warm ivory text, single muted gold accent.]
