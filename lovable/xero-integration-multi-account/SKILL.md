@@ -575,6 +575,40 @@ export const Route = createFileRoute("/api/public/xero/callback")({
 });
 ```
 
+> ### ⚠️ The landing route must accept `connected` as a **number**, not just a string
+>
+> TanStack Router's default search parser turns `?connected=1` into the **number**
+> `1`. If your landing route (`/dashboard`, `/xero`, wherever the callback
+> redirects to) declares a `validateSearch` schema with
+> `connected: z.string().optional()`, Zod throws "Expected string, received
+> number" — the root `errorComponent` renders instead of your success banner,
+> and the user sees a generic "This page didn't load" the moment Xero redirects
+> them back. Accept string OR number for every param the callback can send
+> (`connected`, `error`, `detail`):
+>
+> ```ts
+> const coercedString = z
+>   .union([z.string(), z.number()])
+>   .optional()
+>   .transform((v) => (v === undefined ? undefined : String(v)));
+>
+> const searchSchema = z.object({
+>   connected: coercedString,
+>   error: coercedString,
+>   detail: coercedString,
+> });
+>
+> export const Route = createFileRoute("/xero")({
+>   validateSearch: searchSchema,
+>   // ...
+> });
+> ```
+>
+> Alternative: omit `validateSearch` on that route and read the params via
+> `useSearch({ strict: false })` or `window.location.search`. Either works — the
+> trap is *only* the `z.string().optional()` shape, which reads as safe and
+> silently blows up the first time Xero actually redirects back.
+
 ## 5. Use it per request (refresh + persist rotation)
 
 The server runtime instantiates fresh each call, so "never cache a client" is
@@ -700,6 +734,11 @@ Also read `?error=…&detail=…` from the URL on the post-callback landing page
 every failure with those params; without surfacing them, a callback crash
 looks identical to "not connected yet" and the user has no idea anything
 happened.
+
+If you read these params via `Route.useSearch()` under a `validateSearch`
+schema, make sure the schema accepts number-shaped values (see the callout
+in §4). Otherwise a returning user with `?connected=1` trips the root error
+boundary before the banner ever renders.
 
 
 ## Date + money + tax normalisation
@@ -866,3 +905,9 @@ pragmatic choice.
    rather than 403 — proof tokens carry write scopes, not just `.read`.
 8. Flip a connection to `needs_reconnect` and confirm the per-row banner appears
    and its CTA re-runs the connect flow.
+9. **Return path renders, doesn't crash.** After a successful connect, confirm
+   `/<landing-route>?connected=1` shows the success banner. After forcing the
+   callback error in step 0.5, confirm `?error=callback&detail=…` renders the
+   error banner. Neither URL should trigger the root error boundary — if it
+   does, the landing route's `validateSearch` is too strict; see the callout
+   in §4.
