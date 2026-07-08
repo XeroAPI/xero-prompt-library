@@ -740,6 +740,105 @@ schema, make sure the schema accepts number-shaped values (see the callout
 in §4). Otherwise a returning user with `?connected=1` trips the root error
 boundary before the banner ever renders.
 
+## 7. Required post-connect UX: show the org name + a Disconnect button
+
+Once a connection exists, the UI MUST do two things — treat these as required,
+not polish:
+
+1. **Display the connected Xero organisation name** (`tenant_name`) prominently
+   near the "Connected" state. Connecting the *wrong* Xero org to a customer
+   record is the single most common multi-tenant support ticket ("why are these
+   invoices from another company appearing here?"), and the user has no way to
+   catch the mistake if the UI only shows a green tick. Show the name — and if
+   `/connections` returned multiple orgs under one consent, list them all.
+2. **Render a Disconnect button** so the user can drop the link themselves —
+   without one, the only way out is a database edit. The button should:
+   - Call a `xeroDisconnect` server fn gated by `requireSupabaseAuth`, scoped
+     to the calling `user_id` + `client_id`/`tenant_id`, that deletes the
+     matching `xero_connections` row(s).
+   - **Also revoke on Xero's side** by POSTing the refresh token to
+     `https://identity.xero.com/connect/revocation` with Basic auth. Deleting
+     locally does NOT invalidate Xero's stored refresh token — a leaked backup
+     would still be usable. Revoke first, then delete; ignore revocation errors
+     for tokens that are already invalid.
+   - Invalidate the connection-status query (and any dependent Xero queries) so
+     the UI immediately falls back to the "Connect Xero" state.
+   - Confirm with the user first — this is destructive and requires re-consent
+     to reverse.
+
+```ts
+// src/lib/xero-disconnect.functions.ts
+import { createServerFn } from "@tanstack/react-start";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { z } from "zod";
+import { XERO, basicAuth } from "./xero-config";
+
+export const xeroDisconnect = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({ tenantId: z.string() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { decrypt } = await import("./server/crypto.server");
+
+    const { data: conn } = await supabaseAdmin
+      .from("xero_connections")
+      .select("token_set_enc")
+      .eq("user_id", context.userId)
+      .eq("tenant_id", data.tenantId)
+      .maybeSingle();
+
+    if (conn?.token_set_enc) {
+      try {
+        const tokenSet = JSON.parse(decrypt(conn.token_set_enc));
+        await fetch("https://identity.xero.com/connect/revocation", {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${basicAuth(process.env.XERO_CLIENT_ID!, process.env.XERO_CLIENT_SECRET!)}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ token: tokenSet.refresh_token }),
+        });
+      } catch (e) {
+        console.warn("[xero] revocation failed (continuing with local delete)", e);
+      }
+    }
+
+    // Delete every sibling row that shared this token set, not just the one tenant.
+    await supabaseAdmin
+      .from("xero_connections")
+      .delete()
+      .eq("user_id", context.userId)
+      .eq("tenant_id", data.tenantId);
+
+    return { ok: true };
+  });
+```
+
+Minimal UI:
+
+```tsx
+{connected && (
+  <div className="flex items-center gap-2">
+    <Badge variant="secondary">Connected: {conn.tenant_name}</Badge>
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => {
+        if (!confirm(`Disconnect ${conn.tenant_name} from Xero?`)) return;
+        disconnect.mutate({ data: { tenantId: conn.tenant_id } });
+      }}
+    >
+      Disconnect
+    </Button>
+  </div>
+)}
+```
+
+A "Connected" badge with no org name and no way to unlink is an incomplete
+integration — do not ship without both.
+
+
+
 
 ## Date + money + tax normalisation
 
@@ -853,6 +952,24 @@ one that silently succeeded.
   tables have RLS with no anon/authenticated policies and no grants to those roles.
 - **`npm:xero-node`** for read/write API calls is optional and must bundle cleanly
   for the Worker runtime — the `fetch`-based OAuth flow above avoids the dependency.
+- **The token table has no read policy by default — a client-side status query
+  silently returns null columns.** The schema in §2 only grants `service_role`,
+  so a browser `supabase.from("xero_connections")` — or a view over it with the
+  default `security_invoker=on` — returns rows whose `tenant_id`/`tenant_name`/
+  `status` are all `null` after connecting. The UI reads that as "not
+  connected" and shows the Connect button again even though the row exists.
+  Two options, in preference order:
+  - **Preferred:** keep the base table service-role-only and read status
+    through a `requireSupabaseAuth` server fn (see §6 `xeroConnections`) that
+    projects only non-sensitive columns (`tenant_id`, `tenant_name`, `status`).
+    Never return `token_set_enc`.
+  - **If you must expose it directly to the browser** (e.g. a status view your
+    UI subscribes to): create a **column-projected view** that excludes
+    `token_set_enc`, `GRANT SELECT` on the *view* (not the base table) to
+    `authenticated`, and add a `SELECT` policy on the base table scoped to
+    `auth.uid() = user_id`. Never grant SELECT on `token_set_enc` to any role
+    other than `service_role`.
+
 
 ## Security checklist (do not skip)
 
@@ -871,6 +988,13 @@ one that silently succeeded.
   re-connect** — don't silently retry forever.
 - Keep all Xero access in **one place** (`xero-config.ts` + `xero-token.server.ts`
   + `xero-redirect.ts`) so paths, tenant handling, and gotchas live together.
+- **Never grant SELECT on `token_set_enc` to `anon` or `authenticated`.** Read
+  connection status through a `requireSupabaseAuth` server fn that projects
+  only `tenant_id`, `tenant_name`, `status` — see the gotcha above and §6.
+- **Ship a Disconnect action alongside every "Connected" state** (see §7), and
+  wire it to Xero's revocation endpoint — deleting the local row alone leaves
+  a valid refresh token in Xero's system.
+
 
 ## Don't want to hand-roll it?
 
@@ -911,3 +1035,14 @@ pragmatic choice.
    error banner. Neither URL should trigger the root error boundary — if it
    does, the landing route's `validateSearch` is too strict; see the callout
    in §4.
+10. **Client-side status query returns a real row, not nulls.** After
+    connecting, confirm the browser's connection-status read (server fn or
+    view) returns a populated `tenant_name` and `status="active"` — not an
+    all-null row. All-null means the read policy / grants are missing (see the
+    gotcha in the Lovable / TanStack Start section).
+11. **Org name is visible and Disconnect works end-to-end.** After connecting,
+    the UI shows the Xero `tenant_name`. Click Disconnect: the row is deleted,
+    the UI falls back to the Connect state, and a subsequent Xero API call
+    surfaces `needs_reconnect` (or "not connected") rather than silently
+    succeeding — proof revocation invalidated the refresh token on Xero's side.
+
