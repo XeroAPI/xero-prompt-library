@@ -1,37 +1,30 @@
 Build "The Executive" — a luxury single-product storefront selling one
-beltless trenchcoat at £2,495 GBP.
+beltless trenchcoat.
 
 STACK
 - Use the Lovable default stack (TanStack Start + Lovable Cloud).
-- No Edge Functions. All server logic via createServerFn.
+- Use the Lovable Xero connector
 - Lovable Cloud Postgres for orders and Xero token storage.
 
 AUTH
 - Buyers never log in.
-- Admin dashboard at /dashboard: leave unauthenticated for v1 with a
-  visible warning banner ("Add admin auth before going live"). Do NOT
-  gate the Xero connect button behind a shared secret or curl command.
 
 PRODUCT (server-side source of truth, not editable in UI)
 - name: "The Executive Beltless Trenchcoat"
 - price: 2495, currency: GBP, Xero account code: "200"
 - sizes 34–44; colours Navy, Camel, Black, Stone
 
-XERO INTEGRATION (apply the xero-integration-single-account skill)
-- Scopes: offline_access, openid, profile, email, accounting.contacts, accounting.invoices
+XERO INTEGRATION (use the Lovable Xero connector)
 - On order: upsert contact by email → create AUTHORISED ACCREC invoice,
   14-day due date, single line item → fetch OnlineInvoiceUrl → redirect.
 - Persist every order; on Xero failure store status="failed" with the
   error message. Never lose an order row.
-- "Connect Xero" is an in-app button on /dashboard (no curl, no secret).
 
 PAGES
 - /          editorial hero landing
-- /order     size/colour/qty form
-- /orders    "The Ledger" list
+- /order     size/colour/qty/delivery details form 
+- /orders    a list of orders
 - /orders/:id detail with invoice link
-- /dashboard connection status + revenue stats + auth warning
 
 DESIGN
-- Reference: Mr Porter. Cormorant Garamond headings, clean sans body.
-- Deep navy/charcoal bg, warm ivory text, single muted gold accent.
+- Stylish, moody, mysterious
