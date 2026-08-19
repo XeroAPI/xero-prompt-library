@@ -1,5 +1,5 @@
-Build "The Executive" — a luxury single-product storefront selling one
-beltless trenchcoat.
+Build "The Frozen Banana Stand" — a single-product storefront selling one
+ultra premium frozen banana on a stick
 
 STACK
 - Use the Lovable default stack (TanStack Start + Lovable Cloud).
@@ -10,9 +10,8 @@ AUTH
 - Buyers never log in.
 
 PRODUCT (server-side source of truth, not editable in UI)
-- name: "The Executive Beltless Trenchcoat"
-- price: 2495, currency: GBP, Xero account code: "200"
-- sizes 34–44; colours Navy, Camel, Black, Stone
+- name: "The Ultimate Frozen Banana"
+- price: 250,000, currency: USD, Xero account code: "400"
 
 XERO INTEGRATION (use the Lovable Xero connector)
 - On order: upsert contact by email → create AUTHORISED ACCREC invoice,
@@ -22,9 +21,8 @@ XERO INTEGRATION (use the Lovable Xero connector)
 
 PAGES
 - /          editorial hero landing
-- /order     size/colour/qty/delivery details form 
-- /orders    a list of orders
+- /order     size/colour/qty/delivery details form
 - /orders/:id detail with invoice link
 
 DESIGN
-- Stylish, moody, mysterious
+- Colourful, roadside-stand vibes, imagine there is money in the walls
