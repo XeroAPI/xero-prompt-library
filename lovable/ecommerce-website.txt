@@ -1,5 +1,5 @@
 Build "The Frozen Banana Stand" — a single-product storefront selling one
-ultra premium frozen banana on a stick
+ultra premium frozen banana
 
 STACK
 - Use the Lovable default stack (TanStack Start + Lovable Cloud).
