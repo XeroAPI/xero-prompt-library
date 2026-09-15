@@ -1,0 +1,27 @@
+Build "Canterbury Crusaders Accountants" - a website for an accounting practice that includes a client onboarding flow for people wanting to adopt our accounting services.
+
+STACK
+Use the Lovable default stack (TanStack Start + Lovable Cloud).
+Use the Lovable Xero   connector
+Lovable Cloud Postgres for Xero token storage and any other storage needs.
+
+AUTH
+Clients never log in.
+
+PRODUCTS (server-side source of truth, not editable in UI)
+3 tiers of accounting services available - $200 a month, $400 a month, & $800 a month NZD
+Xero account code is 200 for all 3
+
+XERO INTEGRATION (use the Lovable Xero connector)
+On completing onboarding: upsert contact by email → create AUTHORISED ACCREC invoice,
+14-day due date, single line item → fetch OnlineInvoiceUrl → redirect.
+Persist every onboarding; on Xero failure store status="failed" with the
+error message. Never lose an onboarding row.
+
+PAGES
+/          editorial hero landing
+/onboard     gather client details in a form - ask relevant questions that we need to know in order to provide NZ accounting services
+/onboard/:id detail with onboarding link
+
+DESIGN
+Professional, but a little bit fun. Include humorous rugby references
