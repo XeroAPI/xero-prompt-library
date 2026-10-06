@@ -13,11 +13,13 @@ PRODUCTS (server-side source of truth, not editable in UI)
 Xero account code is 200 for all 3
 
 XERO INTEGRATION (use the Lovable Xero connector)
-On completing onboarding: create a contact by email & create AUTHORISED ACCREC invoice,
-14-day due date, single line item with the plan cost for the first month.
-After creating the invoice: fetch the customer's online invoice link using Xero's OnlineInvoice endpoint and redirect the client to it.
+On completing onboarding: create a Xero contact with the name, address, & email provided. 
+If a contact already exists with that name & email combination reuse it instead of creating a duplicate.
+Then create AUTHORISED ACCREC invoice, 14-day due date, single line item with the plan cost for the first month.
+After creating the invoice: do NOT email the client; fetch the customer's online invoice link using Xero's OnlineInvoice endpoint and redirect the client to it.
 Persist every onboarding; on Xero failure store status="failed" with theerror message. Never lose an onboarding row.
-if the online invoice link can't be fetched, treat it as an error to investigate, not a normal case
+if the online invoice link can't be fetched, treat it as an error to investigate, not a normal case.
+After building, submit one test onboarding end-to-end and confirm the contact and invoice actually appear in Xero.
 
 PAGES
 /          editorial hero landing
