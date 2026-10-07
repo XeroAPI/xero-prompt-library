@@ -2,40 +2,53 @@ Build "[APP_NAME]" — [ONE_LINE_DESCRIPTION].
 
 STACK
 - Use the Lovable default stack (TanStack Start + Lovable Cloud).
-- No Edge Functions. All server logic via createServerFn.
-- Lovable Cloud Postgres for app data and Xero token storage.
+- Use the Lovable Xero connector for all Xero calls.
+- Lovable Cloud Postgres for Xero token storage and all other app data.
 
 AUTH
-[INSERT AUTH REQUIREMENTS HERE. Example: "Buyers never log in. Admin dashboard
-at /dashboard: leave unauthenticated for v1 with a visible warning banner
-('Add admin auth before going live'). Do NOT gate the Xero connect button
-behind a shared secret or curl command."]
+[INSERT AUTH REQUIREMENTS HERE. Example: "Clients never log in."]
+
+PRODUCTS (server-side source of truth, not editable in UI) [ONLY NECESSARY IF SELLING SOMETHING]
+[INSERT PRODUCTS/PLANS, PRICES, CURRENCY AND XERO ACCOUNT CODES HERE. Example:
+"3 tiers of accounting services: $200, $400 and $800 a month NZD.
+Xero account code 200 for all 3."]
+- Never take price, currency or account code from the client. Look them up
+  server-side from the selected [PRODUCT/PLAN] ID.
 
 CORE FUNCTIONALITY
-[INSERT YOUR SPECIFIC APP FEATURES HERE. Example: "Single-product storefront
-with server-side product config (name, price, currency, Xero account code,
-variants). Never take price or account code from the client."]
+[INSERT YOUR SPECIFIC APP FEATURES HERE. Example: "Client onboarding form that
+collects the details we need to provide NZ accounting services, plus plan
+selection."]
 
-XERO INTEGRATION (apply the xero-integration-single-account skill, or
-xero-integration-multi-account if each user connects their own Xero)
-- Scopes: [INSERT REQUIRED GRANULAR SCOPES — must include offline_access.
-  See https://developer.xero.com/documentation/guides/oauth2/scopes]
-- [INSERT XERO DATA FLOW HERE. Example: "On order: upsert contact by email →
-  create AUTHORISED ACCREC invoice, 14-day due date, single line item → fetch
-  OnlineInvoiceUrl → redirect."]
-- Persist every [RECORD_TYPE e.g. order]; on Xero failure store status="failed"
-  with the error message. Never lose a row.
-- "Connect Xero" is an in-app button on /dashboard (no curl, no secret).
+XERO INTEGRATION (use the Lovable Xero connector)
+On [TRIGGER_EVENT, e.g. completing onboarding]:
+1. Contact: create a Xero contact with [FIELDS, e.g. name, address, email].
+   If a contact with the same [MATCH_KEY, e.g. name + email] already exists,
+   reuse it instead of creating a duplicate.
+2. Invoice: create an AUTHORISED ACCREC invoice, [N]-day due date,
+   [LINE_ITEMS, e.g. single line item with the plan cost for the first month].
+3. Do NOT email the invoice from Xero. Fetch the online invoice link using
+   Xero's OnlineInvoice endpoint and redirect the [USER, e.g. client] to it.
+4. If the online invoice link can't be fetched, treat it as an error to
+   investigate, not a normal case.
+
+PERSISTENCE
+[INSERT YOUR REQUIREMENTS FOR WHAT GETS SAVED HERE. Example:
+- Save every [RECORD_TYPE, e.g. onboarding] before calling Xero.
+- On Xero failure store status="failed" with the error message.
+  Never lose a [RECORD_TYPE] row.
+- On success store the Xero ContactID, InvoiceID and online invoice URL.]
 
 PAGES
 [INSERT YOUR PAGES AND ROUTES HERE. Example:
-- /          editorial hero landing
-- /order     size/colour/qty form
-- /orders    "The Ledger" list
-- /orders/:id detail with invoice link
-- /dashboard connection status + revenue stats + auth warning]
+- /            editorial hero landing
+- /onboard     client details form
+- /onboard/:id confirmation/detail with invoice link]
 
 DESIGN
-[INSERT YOUR DESIGN REQUIREMENTS HERE. Example:
-- Reference: Mr Porter. Cormorant Garamond headings, clean sans body.
-- Deep navy/charcoal bg, warm ivory text, single muted gold accent.]
+[INSERT YOUR DESIGN REQUIREMENTS HERE. Example: "Professional, but a little
+bit fun. Include humorous rugby references."]
+
+VERIFICATION
+After building, submit one test [RECORD_TYPE] end-to-end and confirm the
+contact and invoice actually appear in Xero. Report the invoice number.
